@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-// Import Types/Components
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -17,52 +16,21 @@ import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
 
-// --- HELPER: ERROR IMAGE GENERATOR ---
+// --- HELPER: ERROR IMAGE ---
 const createErrorImage = (text: string) => {
   const canvas = document.createElement('canvas');
-  canvas.width = 300;
-  canvas.height = 200;
+  canvas.width = 300; canvas.height = 200;
   const ctx = canvas.getContext('2d');
   if (ctx) {
-    ctx.fillStyle = '#1a1a1a';
-    ctx.fillRect(0, 0, 300, 200);
-    ctx.strokeStyle = '#ef4444';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(10, 10, 280, 180);
-    ctx.fillStyle = '#ef4444';
-    ctx.font = 'bold 24px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#1a1a1a'; ctx.fillRect(0, 0, 300, 200);
+    ctx.strokeStyle = '#ef4444'; ctx.lineWidth = 4; ctx.strokeRect(10, 10, 280, 180);
+    ctx.fillStyle = '#ef4444'; ctx.font = 'bold 24px sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText('RAW FAIL', 150, 80);
-    ctx.font = '12px sans-serif';
-    ctx.fillStyle = '#71717a';
+    ctx.fillStyle = '#71717a'; ctx.font = '12px sans-serif';
     ctx.fillText(text.slice(0, 20), 150, 130);
   }
   return canvas.toDataURL('image/jpeg');
-};
-
-// --- HELPER: BLOB CONVERTER ---
-// Ensures whatever exifr returns (Buffer or Blob) gets turned into a valid URL
-const rawDataToUrl = (data: any): string => {
-    if (!data) return '';
-    let blob: Blob;
-    if (data instanceof Blob) {
-        blob = data;
-    } else {
-        blob = new Blob([data], { type: 'image/jpeg' });
-    }
-    return URL.createObjectURL(blob);
-};
-
-// --- HELPER: CHECK IMAGE DIMENSIONS ---
-// Returns true if the blob url points to an image larger than minWidth
-const isImageLargeEnough = (url: string, minWidth: number = 600): Promise<boolean> => {
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.onload = () => resolve(img.width >= minWidth);
-        img.onerror = () => resolve(false);
-        img.src = url;
-    });
 };
 
 // --- HELPER: RAW DETECTION ---
@@ -71,101 +39,99 @@ const isRawFile = (file: File) => {
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: HEAVY DECODER (UTIF) ---
-const decodeWithUTIF = async (file: File): Promise<string | null> => {
-    const UTIF = (window as any).UTIF;
-    if (!UTIF) return null;
-
-    try {
-        console.log(`UTIF Decoding ${file.name}...`);
-        const arrayBuffer = await file.arrayBuffer();
-        const ifds = UTIF.decode(arrayBuffer);
-        
-        let page = ifds[0];
-        // Scan for the largest valid image
-        let maxPixels = 0;
-        for (let i = 0; i < ifds.length; i++) {
-             const p = ifds[i];
-             if (p.width && p.height) {
-                 const pixels = p.width * p.height;
-                 if (pixels > maxPixels) {
-                     maxPixels = pixels;
-                     page = p;
-                 }
-             }
-        }
-
-        if (!page || !page.width || !page.height) return null;
-
-        UTIF.decodeImage(arrayBuffer, page);
-        const rgba = UTIF.toRGBA8(page);
-        
-        const canvas = document.createElement('canvas');
-        canvas.width = page.width;
-        canvas.height = page.height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return null;
-
-        const imgData = ctx.createImageData(page.width, page.height);
-        imgData.data.set(rgba);
-        ctx.putImageData(imgData, 0, 0);
-
-        return canvas.toDataURL('image/jpeg', 0.95);
-    } catch (e) {
-        console.warn("UTIF decode failed:", e);
-        return null;
+// --- HELPER: DECODE RAW TO CANVAS ---
+// This attempts to decode the RAW data into a useable HTMLCanvasElement
+const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> => {
+    // 1. Try raw.js (Good for CR2, NEF)
+    if ((window as any).raw) {
+        try {
+            console.log(`Decoding ${file.name} with raw.js...`);
+            const reader = new FileReader();
+            return new Promise((resolve) => {
+                reader.onload = (e) => {
+                    try {
+                        const buffer = e.target?.result as ArrayBuffer;
+                        const raw = new (window as any).raw.Raw();
+                        const view = new Uint8Array(buffer);
+                        raw.setData(view);
+                        const processed = raw.extractThumb() || raw.decode(); 
+                        // If extractThumb fails, decode() does the full heavy lift
+                        
+                        const canvas = document.createElement('canvas');
+                        canvas.width = processed.width;
+                        canvas.height = processed.height;
+                        const ctx = canvas.getContext('2d');
+                        if (!ctx) { resolve(null); return; }
+                        
+                        const imgData = ctx.createImageData(processed.width, processed.height);
+                        imgData.data.set(processed.data);
+                        ctx.putImageData(imgData, 0, 0);
+                        resolve(canvas);
+                    } catch (err) {
+                        console.warn("raw.js failed:", err);
+                        resolve(null);
+                    }
+                };
+                reader.readAsArrayBuffer(file);
+            });
+        } catch (e) { console.warn("raw.js crash", e); }
     }
-}
 
-// --- HELPER: MASTER RAW LOADER ---
-const loadRawImage = async (file: File): Promise<string | null> => {
-  const exifr = (window as any).exifr;
+    // 2. Try UTIF (Good for DNG, TIFF)
+    if ((window as any).UTIF) {
+        try {
+            console.log(`Decoding ${file.name} with UTIF...`);
+            const buffer = await file.arrayBuffer();
+            const ifds = (window as any).UTIF.decode(buffer);
+            
+            // Find best image
+            let page = ifds[0];
+            // Check SubIFDs (common in DNG)
+            if (page.subIFD && page.subIFD.length > 0) {
+                 // Often the full res is in subIFD[0] for DNG
+                 page = page.subIFD[0];
+            }
+            
+            (window as any).UTIF.decodeImage(buffer, page);
+            const rgba = (window as any).UTIF.toRGBA8(page);
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = page.width;
+            canvas.height = page.height;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+                const imgData = ctx.createImageData(page.width, page.height);
+                imgData.data.set(rgba);
+                ctx.putImageData(imgData, 0, 0);
+                return canvas;
+            }
+        } catch (e) { console.warn("UTIF failed", e); }
+    }
 
-  if (!exifr) {
-    console.error("Libraries not loaded yet.");
     return null;
-  }
-
-  // --- ATTEMPT 1: HIGH QUALITY PREVIEW (EXIFR) ---
-  try {
-    console.log(`Trying Preview for ${file.name}...`);
-    const previewData = await exifr.preview(file);
-    if (previewData) {
-        const url = rawDataToUrl(previewData);
-        // Only accept if it's decent quality (e.g. > 600px wide)
-        if (await isImageLargeEnough(url, 600)) {
-            console.log("✅ High-Res Preview Found via exifr");
-            return url;
-        }
-        console.log("⚠️ Preview found but too small, ignoring...");
-    }
-  } catch(e) { console.debug("Preview extraction skipped."); }
-
-  // --- ATTEMPT 2: HEAVY DECODE (UTIF) ---
-  // We prefer this over a tiny thumbnail because we want QUALITY.
-  console.warn(`No large preview in ${file.name}. Trying UTIF Heavy Decode...`);
-  const decodedUrl = await decodeWithUTIF(file);
-  if (decodedUrl) {
-      console.log(`✅ UTIF Success (High Quality)`);
-      return decodedUrl;
-  }
-
-  // --- ATTEMPT 3: THUMBNAIL (LAST RESORT) ---
-  // If UTIF failed (or file type unsupported), we accept the tiny thumbnail rather than nothing.
-  try {
-    console.log(`UTIF failed. Falling back to thumbnail for ${file.name}...`);
-    const thumbData = await exifr.thumbnail(file);
-    if (thumbData) {
-        console.log("⚠️ Low-Res Thumbnail used (Last Resort)");
-        return rawDataToUrl(thumbData);
-    }
-  } catch(e) { console.debug("Thumbnail extraction skipped."); }
-
-  console.error(`❌ All methods failed for ${file.name}`);
-  return null;
 };
 
-// --- HELPER: AUTO CROP MATH ---
+// --- HELPER: CREATE PROXY (Downscale) ---
+const createProxyUrl = async (sourceCanvas: HTMLCanvasElement): Promise<string> => {
+    const PROXY_SIZE = 2048; // Good balance of speed vs quality for editing
+    const scale = Math.min(1, PROXY_SIZE / Math.max(sourceCanvas.width, sourceCanvas.height));
+    
+    if (scale >= 1) {
+        return sourceCanvas.toDataURL('image/jpeg', 0.8);
+    }
+
+    const proxyCanvas = document.createElement('canvas');
+    proxyCanvas.width = sourceCanvas.width * scale;
+    proxyCanvas.height = sourceCanvas.height * scale;
+    const ctx = proxyCanvas.getContext('2d');
+    if (ctx) {
+        ctx.drawImage(sourceCanvas, 0, 0, proxyCanvas.width, proxyCanvas.height);
+        return proxyCanvas.toDataURL('image/jpeg', 0.8);
+    }
+    return sourceCanvas.toDataURL('image/jpeg', 0.8);
+};
+
+// --- HELPER: AUTO CROP ---
 const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   if (rotationDeg === 0) return { top: 0, bottom: 0, left: 0, right: 0 };
   const rad = Math.abs((rotationDeg * Math.PI) / 180);
@@ -198,18 +164,17 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
+        <p className="text-center text-[9px] text-zinc-700">Decoding RAW Data...</p>
       </div>
     </div>
   );
 };
 
 // --- Thumbnail Helper ---
-const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
+const generateThumbnail = async (url: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
-    const timer = setTimeout(() => resolve(existingUrl), 1500); 
     img.onload = () => {
-      clearTimeout(timer);
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       const scale = Math.min(150 / img.width, 150 / img.height);
@@ -217,11 +182,11 @@ const generateThumbnail = async (file: File, existingUrl: string): Promise<strin
       canvas.height = img.height * scale;
       if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : existingUrl), 'image/jpeg', 0.6);
-      } else { resolve(existingUrl); }
+          canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : url), 'image/jpeg', 0.6);
+      } else { resolve(url); }
     };
-    img.onerror = () => { clearTimeout(timer); resolve(existingUrl); };
-    img.src = existingUrl;
+    img.onerror = () => resolve(url);
+    img.src = url;
   });
 };
 
@@ -230,12 +195,14 @@ const App: React.FC = () => {
 
   // --- CDN INJECTION ---
   useEffect(() => {
-    if (!(window as any).exifr) {
+    // raw.js (Wrapper for dcraw - good for CR2/NEF)
+    if (!(window as any).raw) {
         const s1 = document.createElement('script');
-        s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
+        s1.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
         s1.async = true;
         document.body.appendChild(s1);
     }
+    // UTIF (Good for DNG/TIFF)
     if (!(window as any).UTIF) {
         const s2 = document.createElement('script');
         s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
@@ -277,7 +244,11 @@ const App: React.FC = () => {
   const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
+  // --- DATA STATE ---
   const [photos, setPhotos] = useState<Photo[]>([]);
+  // Registry to hold the ORIGINAL RAW FILES (memory intensive, but necessary for export)
+  const fileRegistry = useRef<Record<string, File>>({});
+  
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
@@ -295,9 +266,6 @@ const App: React.FC = () => {
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
     const img = new Image();
-    img.onerror = () => {
-        console.error("Could not load image source for:", photo.name);
-    };
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
     img.src = photo.src;
   }, [activePhotoId, photos, imageElements]);
@@ -321,6 +289,22 @@ const App: React.FC = () => {
   };
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
+    // 1. Check if we have the original RAW file stored
+    const rawFile = fileRegistry.current[photo.id];
+    
+    // 2. If we do, DECODE IT AGAIN (This is the slow "Export" step)
+    if (rawFile && isRawFile(rawFile)) {
+        console.log(`Re-decoding ${rawFile.name} for full-res export...`);
+        const canvas = await decodeRawToCanvas(rawFile);
+        if (canvas) {
+            const img = new Image();
+            img.src = canvas.toDataURL('image/jpeg', 0.95);
+            await new Promise(r => img.onload = r);
+            return img;
+        }
+    }
+
+    // 3. Fallback to the proxy image (better than nothing)
     if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -375,19 +359,13 @@ const App: React.FC = () => {
   };
 
   const processExportWithGate = async (photo: Photo) => {
-    if (!user) {
-      setModalType('login_prompt');
-      return;
-    }
-
+    if (!user) { setModalType('login_prompt'); return; }
     const check = canExport();
-    if (!check.allowed) {
-      if (check.reason === 'quota') setModalType('paywall');
-      return;
-    }
+    if (!check.allowed) { if (check.reason === 'quota') setModalType('paywall'); return; }
 
     try {
       setExportStatus({ current: 1, total: 1 });
+      // This will trigger the re-decode of the RAW file
       const img = await getFullResImage(photo);
       const blob = await processImageToBlob(img, photo.params);
       
@@ -404,16 +382,8 @@ const App: React.FC = () => {
   };
 
   const handleBatchExport = async () => {
-    if (!user) {
-        setModalType('login_prompt');
-        return;
-    }
-
-    if (!profile?.is_pro) {
-      setModalType('paywall');
-      return;
-    }
-
+    if (!user) { setModalType('login_prompt'); return; }
+    if (!profile?.is_pro) { setModalType('paywall'); return; }
     if (editedPhotos.length === 0) return;
 
     setBatchProgress({ current: 0, total: editedPhotos.length });
@@ -422,6 +392,7 @@ const App: React.FC = () => {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
         
+        // Triggers re-decode
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
         
@@ -449,40 +420,44 @@ const App: React.FC = () => {
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
 
-    // Ensure libs are loaded
-    if (!(window as any).exifr || !(window as any).UTIF) {
-        console.log("Waiting for Raw Decoders...");
-        await new Promise(r => setTimeout(r, 800));
+    // Ensure libs loaded
+    if (!(window as any).raw && !(window as any).UTIF) {
+        console.log("Waiting for decoders...");
+        await new Promise(r => setTimeout(r, 1000));
     }
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      let fullResUrl = '';
-      let thumbUrl = '';
-      
-      // 1. RAW HANDLING
-      if (isRawFile(file)) {
-          const rawUrl = await loadRawImage(file);
-          if (rawUrl) {
-              fullResUrl = rawUrl;
-              thumbUrl = rawUrl; 
-          } else {
-              console.warn(`CRITICAL: All decoders failed for ${file.name}`);
-              fullResUrl = createErrorImage(file.name);
-              thumbUrl = fullResUrl; 
-          }
-      } else {
-          // 2. STANDARD IMAGE (JPG/PNG)
-          fullResUrl = URL.createObjectURL(file);
-          thumbUrl = await generateThumbnail(file, fullResUrl);
-      }
+      let proxyUrl = '';
       
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+
+      // 1. IS RAW?
+      if (isRawFile(file)) {
+          // Store original file for export later
+          fileRegistry.current[id] = file;
+
+          // Decode to Canvas (Full or Partial)
+          const canvas = await decodeRawToCanvas(file);
+          if (canvas) {
+              // Create Proxy (Resized) for UI
+              proxyUrl = await createProxyUrl(canvas);
+          } else {
+              // Fallback error image
+              proxyUrl = createErrorImage(file.name);
+          }
+      } else {
+          // JPG/PNG: Use directly
+          proxyUrl = URL.createObjectURL(file);
+      }
+      
+      // Generate Thumb
+      const thumbUrl = await generateThumbnail(proxyUrl);
       
       newPhotos.push({ 
         id, 
         name: file.name, 
-        src: fullResUrl, 
+        src: proxyUrl, 
         thumbnailSrc: thumbUrl,
         params: { ...DEFAULT_PARAMS } 
       });
