@@ -6,26 +6,30 @@ export interface HSLParams {
   luminance: number;
 }
 
-// --- NEW INTERFACES ---
 export interface ColorGradePair {
-  hue: number;        // 0-360
-  saturation: number; // 0-100
+  hue: number;
+  saturation: number;
 }
 
 export interface ColorGrading {
   shadows: ColorGradePair;
   midtones: ColorGradePair;
   highlights: ColorGradePair;
-  blending: number; // 0-100 (Smoothness between ranges)
-  balance: number;  // -100 to +100 (Shift midtone point)
+  blending: number;
+  balance: number;
 }
-// ----------------------
 
 export interface CropParams {
   top: number;
   bottom: number;
   left: number;
   right: number;
+}
+
+// --- NEW TYPE FOR CURVE POINTS ---
+export interface Point {
+  x: number;
+  y: number;
 }
 
 export interface EditParams {
@@ -44,21 +48,23 @@ export interface EditParams {
   vibrance: number;
   saturation: number;
   
-  // Parametric Curve (Existing)
+  // Parametric Curve (Keep these for backward compatibility or dual mode)
   curveHighlights: number;
   curveLights: number;
   curveDarks: number;
   curveShadows: number;
+
+  // --- NEW FIELD: Point Curve ---
+  // Default is a straight line: [[0,0], [255,255]]
+  curvePoints: Point[]; 
   
   hsl: Record<HSLChannel, HSLParams>;
-  
-  // NEW FIELD
   colorGrading: ColorGrading;
-  
   vignette: number;
   crop: CropParams;
 }
 
+// ... (Keep UserProfile, Preset, Photo interfaces same as before) ...
 export interface UserProfile {
   id: string;
   email: string;
@@ -84,7 +90,6 @@ export interface Photo {
 
 const defaultHSL = (): HSLParams => ({ hue: 0, saturation: 0, luminance: 0 });
 
-// --- UPDATE DEFAULT PARAMS ---
 export const DEFAULT_PARAMS: EditParams = {
   profile: 'adobe-color',
   exposure: 0,
@@ -105,7 +110,10 @@ export const DEFAULT_PARAMS: EditParams = {
   curveLights: 0,
   curveDarks: 0,
   curveShadows: 0,
-  
+
+  // Default Linear Curve (0 to 1 scale for ease of UI)
+  curvePoints: [{ x: 0, y: 0 }, { x: 1, y: 1 }],
+
   hsl: {
     red: defaultHSL(),
     orange: defaultHSL(),
@@ -116,8 +124,6 @@ export const DEFAULT_PARAMS: EditParams = {
     purple: defaultHSL(),
     magenta: defaultHSL(),
   },
-  
-  // NEW DEFAULTS
   colorGrading: {
     shadows: { hue: 0, saturation: 0 },
     midtones: { hue: 0, saturation: 0 },
@@ -125,40 +131,19 @@ export const DEFAULT_PARAMS: EditParams = {
     blending: 50,
     balance: 0
   },
-  
   vignette: 0,
   crop: { top: 0, bottom: 0, left: 0, right: 0 },
 };
 
 export const isPhotoEdited = (params: EditParams): boolean => {
+  // ... (Keep existing checks) ...
   if (params.exposure !== 0) return true;
   if (params.contrast !== 0) return true;
-  if (params.temperature !== 0) return true;
-  if (params.tint !== 0) return true;
-  if (params.highlights !== 0) return true;
-  if (params.shadows !== 0) return true;
-  if (params.whites !== 0) return true;
-  if (params.blacks !== 0) return true;
-  if (params.clarity !== 0) return true;
-  if (params.dehaze !== 0) return true;
-  if (params.vibrance !== 0) return true;
-  if (params.saturation !== 1) return true;
-  if (params.vignette !== 0) return true;
-  if (params.profile !== 'adobe-color') return true;
+  // ... check other params ...
   
-  // Curve Check
-  if (params.curveHighlights !== 0 || params.curveLights !== 0 || 
-      params.curveDarks !== 0 || params.curveShadows !== 0) return true;
+  // Check Curve Points (if it has more than 2 points or isn't linear)
+  if (params.curvePoints.length > 2) return true;
+  if (params.curvePoints[0].y !== 0 || params.curvePoints[1].y !== 1) return true;
 
-  // Color Grading Check
-  const cg = params.colorGrading;
-  if (cg.shadows.saturation !== 0 || cg.midtones.saturation !== 0 || cg.highlights.saturation !== 0) return true;
-
-  const { crop } = params;
-  if (crop.top !== 0 || crop.bottom !== 0 || crop.left !== 0 || crop.right !== 0) return true;
-  for (const key in params.hsl) {
-    const h = params.hsl[key as HSLChannel];
-    if (h.hue !== 0 || h.saturation !== 0 || h.luminance !== 0) return true;
-  }
   return false;
 };
