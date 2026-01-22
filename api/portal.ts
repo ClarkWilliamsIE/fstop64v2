@@ -24,7 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 3. Create Portal Session
     const session = await stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: origin || 'https://fstop64.vercel.app', 
+      return_url: origin || 'https://fstop64.app', 
     });
 
     res.status(200).json({ url: session.url });
