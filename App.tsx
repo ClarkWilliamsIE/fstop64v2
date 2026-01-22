@@ -9,7 +9,7 @@ import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
-import { LoginModal, PaywallModal, LoginPromptModal } from './components/AuthModals';
+import { LoginModal, PaywallModal, LoginPromptModal, ExportOptionsModal } from './components/AuthModals';
 import AboutModal from './components/AboutModal';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
@@ -40,9 +40,7 @@ const isRawFile = (file: File) => {
 };
 
 // --- HELPER: DECODE RAW TO CANVAS ---
-// This attempts to decode the RAW data into a useable HTMLCanvasElement
 const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> => {
-    // 1. Try raw.js (Good for CR2, NEF)
     if ((window as any).raw) {
         try {
             console.log(`Decoding ${file.name} with raw.js...`);
@@ -55,7 +53,6 @@ const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> 
                         const view = new Uint8Array(buffer);
                         raw.setData(view);
                         const processed = raw.extractThumb() || raw.decode(); 
-                        // If extractThumb fails, decode() does the full heavy lift
                         
                         const canvas = document.createElement('canvas');
                         canvas.width = processed.width;
@@ -77,24 +74,17 @@ const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> 
         } catch (e) { console.warn("raw.js crash", e); }
     }
 
-    // 2. Try UTIF (Good for DNG, TIFF)
     if ((window as any).UTIF) {
         try {
             console.log(`Decoding ${file.name} with UTIF...`);
             const buffer = await file.arrayBuffer();
             const ifds = (window as any).UTIF.decode(buffer);
-            
-            // Find best image
             let page = ifds[0];
-            // Check SubIFDs (common in DNG)
             if (page.subIFD && page.subIFD.length > 0) {
-                 // Often the full res is in subIFD[0] for DNG
                  page = page.subIFD[0];
             }
-            
             (window as any).UTIF.decodeImage(buffer, page);
             const rgba = (window as any).UTIF.toRGBA8(page);
-            
             const canvas = document.createElement('canvas');
             canvas.width = page.width;
             canvas.height = page.height;
@@ -107,19 +97,14 @@ const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> 
             }
         } catch (e) { console.warn("UTIF failed", e); }
     }
-
     return null;
 };
 
 // --- HELPER: CREATE PROXY (Downscale) ---
 const createProxyUrl = async (sourceCanvas: HTMLCanvasElement): Promise<string> => {
-    const PROXY_SIZE = 2048; // Good balance of speed vs quality for editing
+    const PROXY_SIZE = 2048; 
     const scale = Math.min(1, PROXY_SIZE / Math.max(sourceCanvas.width, sourceCanvas.height));
-    
-    if (scale >= 1) {
-        return sourceCanvas.toDataURL('image/jpeg', 0.8);
-    }
-
+    if (scale >= 1) return sourceCanvas.toDataURL('image/jpeg', 0.8);
     const proxyCanvas = document.createElement('canvas');
     proxyCanvas.width = sourceCanvas.width * scale;
     proxyCanvas.height = sourceCanvas.height * scale;
@@ -164,7 +149,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
-        <p className="text-center text-[9px] text-zinc-700">Decoding RAW Data...</p>
       </div>
     </div>
   );
@@ -195,14 +179,12 @@ const App: React.FC = () => {
 
   // --- CDN INJECTION ---
   useEffect(() => {
-    // raw.js (Wrapper for dcraw - good for CR2/NEF)
     if (!(window as any).raw) {
         const s1 = document.createElement('script');
         s1.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
         s1.async = true;
         document.body.appendChild(s1);
     }
-    // UTIF (Good for DNG/TIFF)
     if (!(window as any).UTIF) {
         const s2 = document.createElement('script');
         s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
@@ -241,12 +223,12 @@ const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
-  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | null>(null);
+  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | 'export_options' | null>(null);
+  const [exportTarget, setExportTarget] = useState<'single' | 'batch' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
   // --- DATA STATE ---
   const [photos, setPhotos] = useState<Photo[]>([]);
-  // Registry to hold the ORIGINAL RAW FILES (memory intensive, but necessary for export)
   const fileRegistry = useRef<Record<string, File>>({});
   
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
@@ -289,22 +271,18 @@ const App: React.FC = () => {
   };
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
-    // 1. Check if we have the original RAW file stored
     const rawFile = fileRegistry.current[photo.id];
-    
-    // 2. If we do, DECODE IT AGAIN (This is the slow "Export" step)
     if (rawFile && isRawFile(rawFile)) {
         console.log(`Re-decoding ${rawFile.name} for full-res export...`);
         const canvas = await decodeRawToCanvas(rawFile);
         if (canvas) {
             const img = new Image();
-            img.src = canvas.toDataURL('image/jpeg', 0.95);
+            img.src = canvas.toDataURL('image/jpeg', 1.0);
             await new Promise(r => img.onload = r);
             return img;
         }
     }
 
-    // 3. Fallback to the proxy image (better than nothing)
     if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
       const img = new Image();
@@ -314,7 +292,8 @@ const App: React.FC = () => {
     });
   };
 
-  const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
+  // ADDED QUALITY PARAMETER
+  const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
     
@@ -355,61 +334,56 @@ const App: React.FC = () => {
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
 
-    return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
+    // USE SELECTED QUALITY
+    return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', quality));
   };
 
-  const processExportWithGate = async (photo: Photo) => {
-    if (!user) { setModalType('login_prompt'); return; }
-    const check = canExport();
-    if (!check.allowed) { if (check.reason === 'quota') setModalType('paywall'); return; }
-
-    try {
-      setExportStatus({ current: 1, total: 1 });
-      // This will trigger the re-decode of the RAW file
-      const img = await getFullResImage(photo);
-      const blob = await processImageToBlob(img, photo.params);
+  // --- TRIGGER THE MODAL ---
+  const triggerExportFlow = (type: 'single' | 'batch') => {
+      if (!user) { setModalType('login_prompt'); return; }
       
-      if (blob) {
-        saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`);
-        await incrementExport();
-      }
-    } catch (e) {
-      console.error(e);
-      alert("Export failed.");
-    } finally {
-      setExportStatus(null);
-    }
+      const check = canExport();
+      if (!check.allowed) { if (check.reason === 'quota') setModalType('paywall'); return; }
+
+      if (type === 'batch' && !profile?.is_pro) { setModalType('paywall'); return; }
+      
+      setExportTarget(type);
+      setModalType('export_options');
   };
 
-  const handleBatchExport = async () => {
-    if (!user) { setModalType('login_prompt'); return; }
-    if (!profile?.is_pro) { setModalType('paywall'); return; }
-    if (editedPhotos.length === 0) return;
+  // --- EXECUTE EXPORT (Called after modal selection) ---
+  const runExport = async (quality: number) => {
+    setModalType(null); // Close modal
 
-    setBatchProgress({ current: 0, total: editedPhotos.length });
-
-    try {
-      for (let i = 0; i < editedPhotos.length; i++) {
-        const photo = editedPhotos[i];
-        
-        // Triggers re-decode
-        const img = await getFullResImage(photo);
-        const blob = await processImageToBlob(img, photo.params);
-        
-        if (blob) {
-          saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`);
-          await incrementExport();
-        }
-
-        setBatchProgress({ current: i + 1, total: editedPhotos.length });
-        await new Promise(r => setTimeout(r, 800)); 
-      }
-
-    } catch (e) {
-      console.error("Batch failed", e);
-      alert("Batch export failed. See console.");
-    } finally {
-      setBatchProgress(null);
+    if (exportTarget === 'single' && activePhoto) {
+        try {
+            setExportStatus({ current: 1, total: 1 });
+            const img = await getFullResImage(activePhoto);
+            const blob = await processImageToBlob(img, activePhoto.params, quality);
+            if (blob) {
+                saveAs(blob, `f64_${activePhoto.name.split('.')[0]}.jpg`);
+                await incrementExport();
+            }
+        } catch(e) { console.error(e); alert("Export failed."); }
+        finally { setExportStatus(null); }
+    } 
+    else if (exportTarget === 'batch') {
+        if (editedPhotos.length === 0) return;
+        setBatchProgress({ current: 0, total: editedPhotos.length });
+        try {
+            for (let i = 0; i < editedPhotos.length; i++) {
+                const photo = editedPhotos[i];
+                const img = await getFullResImage(photo);
+                const blob = await processImageToBlob(img, photo.params, quality);
+                if (blob) {
+                    saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`);
+                    await incrementExport();
+                }
+                setBatchProgress({ current: i + 1, total: editedPhotos.length });
+                await new Promise(r => setTimeout(r, 800)); 
+            }
+        } catch(e) { console.error(e); alert("Batch failed."); }
+        finally { setBatchProgress(null); }
     }
   };
 
@@ -420,7 +394,6 @@ const App: React.FC = () => {
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
 
-    // Ensure libs loaded
     if (!(window as any).raw && !(window as any).UTIF) {
         console.log("Waiting for decoders...");
         await new Promise(r => setTimeout(r, 1000));
@@ -432,26 +405,18 @@ const App: React.FC = () => {
       
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
 
-      // 1. IS RAW?
       if (isRawFile(file)) {
-          // Store original file for export later
           fileRegistry.current[id] = file;
-
-          // Decode to Canvas (Full or Partial)
           const canvas = await decodeRawToCanvas(file);
           if (canvas) {
-              // Create Proxy (Resized) for UI
               proxyUrl = await createProxyUrl(canvas);
           } else {
-              // Fallback error image
               proxyUrl = createErrorImage(file.name);
           }
       } else {
-          // JPG/PNG: Use directly
           proxyUrl = URL.createObjectURL(file);
       }
       
-      // Generate Thumb
       const thumbUrl = await generateThumbnail(proxyUrl);
       
       newPhotos.push({ 
@@ -480,7 +445,7 @@ const App: React.FC = () => {
 
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
-        onExport={() => activePhoto && processExportWithGate(activePhoto)}
+        onExport={() => triggerExportFlow('single')}
         onReset={() => handleUpdateParams(DEFAULT_PARAMS)}
         onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
         onPaste={() => clipboard && handleUpdateParams({ ...clipboard })}
@@ -500,6 +465,7 @@ const App: React.FC = () => {
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
+      {modalType === 'export_options' && <ExportOptionsModal onClose={() => setModalType(null)} onConfirm={runExport} />}
       
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
@@ -546,7 +512,7 @@ const App: React.FC = () => {
             activePhotoId={activePhotoId} 
             onSelect={setActivePhotoId} 
             onAdd={() => fileInputRef.current?.click()}
-            onExportSpecific={(photo) => processExportWithGate(photo)}
+            onExportSpecific={() => triggerExportFlow('single')} 
           />
         </div>
 
@@ -559,7 +525,7 @@ const App: React.FC = () => {
             onApplyPreset={(p) => handleUpdateParams({ ...p.params })}
             onDeletePreset={deletePreset}
             editedPhotos={editedPhotos}
-            onBatchExportEdited={handleBatchExport} 
+            onBatchExportEdited={() => triggerExportFlow('batch')} 
             onSelectPhoto={setActivePhotoId}
             onDismissPhoto={(id) => setPhotos(prev => prev.map(p => p.id === id ? { ...p, hiddenFromEdited: true } : p))}
             onUndoDismiss={() => {}}
