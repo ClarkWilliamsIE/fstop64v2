@@ -1,64 +1,101 @@
-
 import React from 'react';
 
-interface ModalProps {
+// --- LOGIN MODAL ---
+interface LoginModalProps {
   onClose: () => void;
   onAction: () => void;
 }
 
-export const LoginModal: React.FC<ModalProps> = ({ onClose, onAction }) => (
-  <div className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-6">
-    <div className="bg-[#1e1e1e] border border-zinc-800 p-10 rounded-2xl shadow-2xl max-w-sm w-full text-center relative">
-      <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-blue-700 rounded-full flex items-center justify-center mx-auto mb-6 text-2xl font-bold shadow-lg shadow-blue-500/20">f/64</div>
-      <h2 className="text-2xl font-bold text-white mb-3">Preserve the Moment</h2>
-      <p className="text-zinc-400 mb-8 text-sm leading-relaxed">
-        Sign in to unlock your <span className="text-white font-bold">30 free monthly exports</span>. Your edits will be saved across devices.
-      </p>
-      <button 
-        onClick={onAction}
-        className="w-full py-4 bg-white text-black font-bold rounded-xl hover:bg-zinc-200 transition-all mb-4 uppercase tracking-widest text-xs"
-      >
-        Sign in to Export
-      </button>
-      <button onClick={onClose} className="text-zinc-600 text-[10px] uppercase tracking-[0.2em] font-bold hover:text-zinc-400 transition-colors">Maybe Later</button>
-    </div>
-  </div>
-);
+export const LoginModal: React.FC<LoginModalProps> = ({ onClose, onAction }) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm select-none p-4" onClick={onClose}>
+      <div className="bg-[#1e1e1e] p-8 rounded-xl shadow-2xl w-96 text-center border border-zinc-800 relative" onClick={(e) => e.stopPropagation()}>
+        {/* Close Button */}
+        <button onClick={onClose} className="absolute top-3 right-3 text-zinc-500 hover:text-white transition-colors">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
 
-export const PaywallModal: React.FC<ModalProps & { isMock: boolean }> = ({ onClose, onAction, isMock }) => (
-  <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur-lg flex items-center justify-center p-6">
-    <div className="bg-[#1e1e1e] border border-zinc-800 p-10 rounded-2xl shadow-2xl max-w-md w-full text-center">
-      <span className="inline-block px-3 py-1 rounded-full bg-blue-500/10 text-blue-400 text-[10px] font-bold uppercase tracking-widest mb-4 border border-blue-500/20">Monthly Limit Reached</span>
-      <h2 className="text-3xl font-bold text-white mb-2">Unlimited Vision</h2>
-      <p className="text-zinc-400 mb-8 text-sm leading-relaxed">Perfect for professional workflows. No limits, just pure processing power.</p>
-      
-      <div className="bg-zinc-900/50 rounded-2xl p-8 mb-8 border border-zinc-800 text-left">
-        <div className="flex justify-between items-end mb-6">
-          <div>
-            <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">Unlimited Pro</p>
-            <p className="text-4xl font-bold text-white">$2<span className="text-lg font-normal text-zinc-600">/mo</span></p>
+        {/* Title */}
+        <h2 className="text-xl font-bold text-white mb-2 tracking-wide uppercase">Member Access</h2>
+        <p className="text-zinc-400 text-xs mb-8">Sign in to sync your exports and access Pro features.</p>
+
+        {/* Action Button */}
+        <button 
+          onClick={onAction}
+          className="w-full flex items-center justify-center gap-3 bg-white text-black font-bold py-3 px-4 rounded hover:bg-zinc-200 transition-all mb-4"
+        >
+          <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-5 h-5" />
+          <span className="text-sm">Continue with Google</span>
+        </button>
+        
+        {/* Legal Footer */}
+        <p className="mt-6 text-[10px] text-zinc-500 leading-normal">
+          By continuing, you agree to our<br/>
+          <a href="/terms" className="underline hover:text-zinc-300">Terms of Service</a> and <a href="/privacy" className="underline hover:text-zinc-300">Privacy Policy</a>.
+        </p>
+      </div>
+    </div>
+  );
+};
+
+// --- PAYWALL MODAL ---
+interface PaywallModalProps {
+  onClose: () => void;
+  onAction: () => void;
+  isMock: boolean;
+}
+
+export const PaywallModal: React.FC<PaywallModalProps> = ({ onClose, onAction, isMock }) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/90 backdrop-blur-md select-none p-4" onClick={onClose}>
+      <div className="bg-gradient-to-b from-[#1e1e1e] to-[#121212] p-8 rounded-2xl shadow-2xl w-[420px] text-center border border-zinc-700 relative overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        {/* Decorative Glow */}
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-full h-1 bg-gradient-to-r from-transparent via-amber-500 to-transparent shadow-[0_0_20px_rgba(245,158,11,0.5)]"></div>
+
+        <button onClick={onClose} className="absolute top-4 right-4 text-zinc-500 hover:text-white transition-colors">
+          <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+
+        <div className="mb-6">
+          <div className="w-16 h-16 bg-gradient-to-br from-amber-400 to-orange-600 rounded-full mx-auto flex items-center justify-center shadow-lg mb-4">
+            <svg className="w-8 h-8 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
           </div>
-          <div className="text-right">
-            <span className="text-[10px] text-green-500 font-bold uppercase tracking-widest">Best Value</span>
+          <h2 className="text-2xl font-black text-white mb-1 tracking-tight">UNLOCK PRO</h2>
+          <p className="text-amber-500 text-xs font-bold uppercase tracking-widest">Limitless Creativity</p>
+        </div>
+
+        <div className="space-y-3 mb-8 text-left bg-zinc-900/50 p-4 rounded-lg border border-zinc-800">
+          <div className="flex items-center gap-3 text-sm text-zinc-200">
+            <span className="text-green-500">✓</span> Unlimited High-Res Exports
+          </div>
+          <div className="flex items-center gap-3 text-sm text-zinc-200">
+            <span className="text-green-500">✓</span> Batch Processing
+          </div>
+          <div className="flex items-center gap-3 text-sm text-zinc-200">
+            <span className="text-green-500">✓</span> Cloud Preset Sync
+          </div>
+           <div className="flex items-center gap-3 text-sm text-zinc-200">
+            <span className="text-green-500">✓</span> Priority Support
           </div>
         </div>
-        <ul className="space-y-3">
-          {['Unlimited High-Res Exports', 'Cloud Preset Synchronization', 'Early Access to New Tools'].map(feat => (
-            <li key={feat} className="flex items-center gap-3 text-xs text-zinc-300">
-              <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>
-              {feat}
-            </li>
-          ))}
-        </ul>
-      </div>
 
-      <button 
-        onClick={onAction}
-        className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-500 transition-all mb-4 shadow-xl shadow-blue-600/20 uppercase tracking-widest text-xs"
-      >
-        {isMock ? 'Upgrade (Simulated)' : 'Continue to Checkout'}
-      </button>
-      <button onClick={onClose} className="text-zinc-600 text-[10px] uppercase tracking-widest font-bold hover:text-zinc-400">Return to Editor</button>
+        <button 
+          onClick={onAction}
+          className="w-full bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white font-bold py-4 px-6 rounded-lg shadow-lg shadow-orange-900/20 transform transition-all hover:scale-[1.02] active:scale-[0.98] uppercase tracking-wider text-sm"
+        >
+          {isMock ? 'Mock Upgrade (Free)' : 'Upgrade Now - $10/mo'}
+        </button>
+        
+        <p className="mt-4 text-[10px] text-zinc-500">
+          Secure payment via Stripe. Cancel anytime.
+        </p>
+      </div>
     </div>
-  </div>
-);
+  );
+};
