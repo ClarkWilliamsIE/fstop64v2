@@ -7,9 +7,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.39.7",
+    "buffer": "^6.0.3",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "@supabase/supabase-js": "^2.39.7"
+    "stripe": "^20.2.0"
   },
   "devDependencies": {
     "@types/react": "^18.2.0",
