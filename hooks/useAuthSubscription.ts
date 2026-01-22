@@ -12,7 +12,6 @@ export function useAuthSubscription() {
     if (isMockMode || !supabase) return 0;
 
     const now = new Date();
-    // Get the first day of the current month
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
 
     const { count, error } = await supabase
@@ -31,10 +30,10 @@ export function useAuthSubscription() {
   const fetchProfile = async (sessionUser: any) => {
     if (isMockMode) return;
 
-    // 1. Fetch Pro Status from 'profiles' table
+    // 1. Fetch Pro Status AND Customer ID from 'profiles' table
     const { data: profileData } = await supabase!
       .from('profiles')
-      .select('is_pro')
+      .select('is_pro, stripe_customer_id') // <--- UPDATED to fetch ID
       .eq('id', sessionUser.id)
       .single();
 
@@ -45,7 +44,8 @@ export function useAuthSubscription() {
     setProfile({
       id: sessionUser.id,
       email: sessionUser.email,
-      is_pro: profileData?.is_pro || false, // Default to false if row missing
+      is_pro: profileData?.is_pro || false,
+      stripe_customer_id: profileData?.stripe_customer_id, // <--- STORE IT
       export_count: exportCount
     });
   };
@@ -89,12 +89,10 @@ export function useAuthSubscription() {
       return;
     }
     
-    // We'll use Google OAuth by default. 
-    // Ensure you have Google enabled in Supabase Authentication -> Providers
     await supabase!.auth.signInWithOAuth({ 
       provider: 'google',
       options: {
-        redirectTo: window.location.origin // Ensure they return to the app
+        redirectTo: window.location.origin
       }
     });
   };
@@ -109,8 +107,8 @@ export function useAuthSubscription() {
     setProfile(null);
   };
 
-  // --- UPDATED: Connects to Vercel API for Stripe Checkout ---
- const upgradeToPro = async () => {
+  // --- UPGRADE TO PRO (With Robust Error Handling) ---
+  const upgradeToPro = async () => {
     if (isMockMode || !user) {
       alert("Please sign in to upgrade.");
       return;
@@ -142,34 +140,56 @@ export function useAuthSubscription() {
       if (data.url) {
         window.location.href = data.url;
       } else {
-        throw new Error("No checkout URL returned (and no error message)");
+        throw new Error("No checkout URL returned");
       }
     } catch (error: any) {
       console.error("Checkout failed:", error);
-      // ALERT THE ACTUAL ERROR
       alert(`Checkout Failed: ${error.message}`);
     }
   };
-  
+
+  // --- NEW: MANAGE SUBSCRIPTION (Cancel/Update) ---
+  const manageSubscription = async () => {
+    if (!profile?.stripe_customer_id) {
+      alert("Cannot find subscription. Are you sure you are Pro?");
+      return;
+    }
+
+    try {
+      const res = await fetch('/api/portal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customerId: profile.stripe_customer_id }),
+      });
+
+      const data = await res.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        alert("Failed to load portal: " + (data.error || "Unknown error"));
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Network error loading portal.");
+    }
+  };
+
   const canExport = (): { allowed: boolean; reason?: 'auth' | 'quota' } => {
     if (!user) return { allowed: false, reason: 'auth' };
     if (profile?.is_pro) return { allowed: true };
-    // Limit is 30
     if (profile && profile.export_count >= 30) return { allowed: false, reason: 'quota' };
     return { allowed: true };
   };
 
   const incrementExport = async () => {
-    // 1. Optimistic UI update (makes the UI feel instant)
     if (profile && !profile.is_pro) {
       setProfile({ ...profile, export_count: profile.export_count + 1 });
     }
 
-    // 2. Real Database Insert
     if (!isMockMode && user) {
       const { error } = await supabase!
         .from('export_logs')
-        .insert({ user_id: user.id }); // RLS requires us to own this user_id
+        .insert({ user_id: user.id });
         
       if (error) console.error("Failed to log export:", error);
     }
@@ -182,6 +202,7 @@ export function useAuthSubscription() {
     signIn,
     signOut,
     upgradeToPro,
+    manageSubscription, // <--- EXPORTED HERE
     canExport,
     incrementExport
   };
