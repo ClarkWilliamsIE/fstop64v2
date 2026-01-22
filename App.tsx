@@ -9,14 +9,13 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
-// --- New Component: Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current, total }) => {
   const percentage = Math.round((current / total) * 100);
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center select-none">
       <div className="w-64 space-y-4">
         <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-zinc-400">
-          <span>Importing Assets</span>
+          <span>Generating Thumbnails</span>
           <span>{percentage}%</span>
         </div>
         <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
@@ -33,6 +32,35 @@ const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current,
   );
 };
 
+// --- Helper: Generate tiny thumbnail ---
+const generateThumbnail = async (file: File): Promise<string> => {
+  return new Promise((resolve) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        // Max thumbnail size 150px
+        const scale = Math.min(150 / img.width, 150 / img.height);
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
+        if (ctx) {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            canvas.toBlob(blob => {
+                if (blob) resolve(URL.createObjectURL(blob));
+                else resolve(e.target?.result as string); // Fallback
+            }, 'image/jpeg', 0.7);
+        } else {
+            resolve(e.target?.result as string);
+        }
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
 const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, canExport, incrementExport } = useAuthSubscription();
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
@@ -42,7 +70,6 @@ const App: React.FC = () => {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   
-  // Cache for loaded "heavy" images (only for the viewport)
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
@@ -51,15 +78,14 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initial Demo Data
   useEffect(() => {
+    // Initial Demo Photos - We just reuse src as thumbnail for these since they are web URLs
     const demoPhotos = [
-      { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', params: { ...DEFAULT_PARAMS } },
-      { id: '2', name: 'Urban.jpg', src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', params: { ...DEFAULT_PARAMS } },
+      { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
+      { id: '2', name: 'Urban.jpg', src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
     ];
     setPhotos(demoPhotos);
     setActivePhotoId('1');
-    // Preload demo images
     demoPhotos.forEach(p => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -68,20 +94,14 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // --- Lazy Load Image Logic ---
-  // We only load the heavy HTMLImageElement when the user actually selects the photo.
-  // This prevents crashing when importing 500+ photos.
   useEffect(() => {
     if (!activePhotoId) return;
-    
-    // If already loaded, do nothing
     if (imageElements[activePhotoId]) return;
 
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
 
     const img = new Image();
-    // For local blob URLs, crossOrigin isn't needed, but good for remote
     if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
     
     img.onload = () => {
@@ -102,7 +122,6 @@ const App: React.FC = () => {
 
   const processExportWithGate = async (photo: Photo, img: HTMLImageElement) => {
     const check = canExport();
-    
     if (!check.allowed) {
       if (check.reason === 'auth') setModalType('login');
       else if (check.reason === 'quota') setModalType('paywall');
@@ -135,7 +154,6 @@ const App: React.FC = () => {
     }
   };
 
-  // --- Optimized File Import ---
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
@@ -143,50 +161,47 @@ const App: React.FC = () => {
     const fileList = Array.from(files);
     setImportProgress({ current: 0, total: fileList.length });
     
-    // We'll build a temporary array to batch update the state at the end
-    // (or update in chunks if you want instant feedback, but one update is cleaner for React)
     const newPhotos: Photo[] = [];
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       
-      // CRITICAL FIX: Use createObjectURL instead of FileReader
-      // This creates a virtual pointer to the file on disk, using ~0 RAM.
-      const objectUrl = URL.createObjectURL(file);
+      // 1. Create heavy full-res URL (instant)
+      const fullResUrl = URL.createObjectURL(file);
+      
+      // 2. Generate light-weight thumbnail (async)
+      // This ensures the filmstrip doesn't choke the browser
+      const thumbUrl = await generateThumbnail(file);
+
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       
       newPhotos.push({ 
         id, 
         name: file.name, 
-        src: objectUrl, 
+        src: fullResUrl, 
+        thumbnailSrc: thumbUrl,
         params: { ...DEFAULT_PARAMS } 
       });
 
-      // Update progress bar
       setImportProgress({ current: i + 1, total: fileList.length });
       
-      // Yield to the main thread every 5 photos so the UI doesn't freeze
-      if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
+      // Yield to main thread to keep UI responsive
+      if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
     setPhotos(prev => [...prev, ...newPhotos]);
     
-    // If no photo was selected before, select the first new one
     if (!activePhotoId && newPhotos.length > 0) {
       setActivePhotoId(newPhotos[0].id);
     }
 
-    // Small delay to show 100% completion before closing
-    await new Promise(r => setTimeout(r, 500));
+    await new Promise(r => setTimeout(r, 300));
     setImportProgress(null);
-    
-    // Reset input
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
-      {/* Loading Overlay */}
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} />}
 
       <TopBar 
@@ -216,10 +231,9 @@ const App: React.FC = () => {
             ) : (
               <div className="flex flex-col items-center justify-center text-zinc-700 animate-pulse">
                 {activePhotoId ? (
-                  // Show loading spinner if photo is selected but image not yet loaded
                   <>
                     <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-                    <span className="text-xs font-bold uppercase tracking-widest">Developing Raw Asset...</span>
+                    <span className="text-xs font-bold uppercase tracking-widest">Loading High-Res Asset...</span>
                   </>
                 ) : (
                   <span className="font-medium text-sm">Select an asset to begin developing</span>
