@@ -7,7 +7,7 @@ interface SidebarProps {
   presets: Preset[];
   onSavePreset: (name: string) => void;
   onApplyPreset: (preset: Preset) => void;
-  onDeletePreset?: (id: string) => void; // Optional delete handler
+  onDeletePreset?: (id: string) => void;
   editedPhotos: Photo[];
   onBatchExportEdited: () => void;
   onSelectPhoto: (id: string) => void;
@@ -16,6 +16,7 @@ interface SidebarProps {
   hasLastDismissed: boolean;
   isCropMode: boolean;
   onToggleCropMode: () => void;
+  activeImage?: HTMLImageElement | null;
 }
 
 const Accordion: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = false }) => {
@@ -171,7 +172,14 @@ const Sidebar: React.FC<SidebarProps> = ({
     <div className="flex flex-col h-full select-none bg-[#161616]">
       <div className="flex bg-[#1a1a1a] p-1.5 border-b border-zinc-800 shrink-0">
         <button onClick={() => setActiveTab('develop')} className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all ${activeTab === 'develop' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-600 hover:text-zinc-400'}`}>Develop</button>
-        <button onClick={() => setActiveTab('history')} className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all flex items-center justify-center gap-2 ${activeTab === 'history' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-600 hover:text-zinc-400'}`}>Edited Assets</button>
+        <button onClick={() => setActiveTab('history')} className={`flex-1 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all flex items-center justify-center gap-2 ${activeTab === 'history' ? 'bg-zinc-800 text-white shadow-sm' : 'text-zinc-600 hover:text-zinc-400'}`}>
+            Edited Assets
+            {editedPhotos.length > 0 && (
+                <span className="w-4 h-4 rounded-full bg-blue-600 text-[8px] flex items-center justify-center text-white shadow-lg animate-pulse">
+                {editedPhotos.length}
+                </span>
+            )}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto custom-scrollbar">
@@ -210,7 +218,6 @@ const Sidebar: React.FC<SidebarProps> = ({
               )}
             </div>
 
-            {/* PRESETS */}
             <Accordion title="Presets">
               <div className="space-y-4">
                 <div className="flex gap-2">
