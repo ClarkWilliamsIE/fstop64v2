@@ -15,7 +15,7 @@ interface SidebarProps {
   hasLastDismissed: boolean;
   isCropMode: boolean;
   onToggleCropMode: () => void;
-  // activeImage removed (was only for Histogram)
+  activeImage?: HTMLImageElement | null;
 }
 
 const Accordion: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = false }) => {
@@ -64,12 +64,9 @@ const Slider: React.FC<{
   </div>
 );
 
-// Interactive Curve Editor (Lightweight SVG)
 const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => void }> = ({ points, onChange }) => {
   const svgRef = useRef<SVGSVGElement>(null);
   const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
-
-  // Safe guard if points are undefined in old presets
   const safePoints = points || [{ x: 0, y: 0 }, { x: 1, y: 1 }];
 
   const handleMouseDown = (index: number) => {
@@ -118,11 +115,9 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
          onMouseMove={handleMouseMove}
          onMouseUp={handleMouseUp}
          onMouseLeave={handleMouseUp}>
-      
       <div className="absolute inset-0 grid grid-cols-4 grid-rows-4 pointer-events-none opacity-20">
          {[...Array(16)].map((_, i) => <div key={i} className="border-r border-b border-zinc-500"></div>)}
       </div>
-
       <svg ref={svgRef} viewBox="0 0 100 100" className="absolute inset-0 w-full h-full pointer-events-none z-10 overflow-visible" onDoubleClick={handleDoubleClick} style={{ pointerEvents: 'all' }}>
         <path d={pathD} fill="none" stroke="white" strokeWidth="2" vectorEffect="non-scaling-stroke" />
         {safePoints.map((p, i) => (
@@ -151,6 +146,11 @@ const Sidebar: React.FC<SidebarProps> = ({
 
   const updateParam = (key: keyof EditParams, value: any) => {
     onChange({ ...params, [key]: value });
+  };
+
+  // Safe update for crop params
+  const updateCrop = (key: string, value: number) => {
+    onChange({ ...params, crop: { ...params.crop, [key]: value } });
   };
 
   const updateHSL = (channel: HSLChannel, field: keyof HSLParams, value: number) => {
@@ -186,24 +186,34 @@ const Sidebar: React.FC<SidebarProps> = ({
                     className={`flex-1 flex flex-col items-center gap-2 p-3 rounded-lg border-2 transition-all ${isCropMode ? 'bg-blue-600 border-blue-400 shadow-lg shadow-blue-500/20' : 'bg-zinc-800 border-zinc-700 hover:bg-zinc-700'}`}
                   >
                     <svg className={`w-5 h-5 ${isCropMode ? 'text-white' : 'text-zinc-400'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" /></svg>
-                    <span className={`text-[10px] font-bold uppercase tracking-widest ${isCropMode ? 'text-white' : 'text-zinc-500'}`}>Crop Tool</span>
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${isCropMode ? 'text-white' : 'text-zinc-500'}`}>Crop & Rotate</span>
                   </button>
                </div>
+               
                {isCropMode && (
-                <div className="flex items-center justify-between px-1 bg-zinc-900/50 p-2 rounded border border-zinc-800 mt-2">
-                  <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-semibold">Proportions</span>
-                  <label className="flex items-center gap-2 cursor-pointer group">
-                    <span className="text-[10px] text-zinc-400 group-hover:text-zinc-200">Lock Aspect</span>
-                    <input 
-                      type="checkbox" 
-                      className="w-3 h-3 accent-blue-500" 
-                      checked={isAspectLocked} 
-                      onChange={(e) => {
-                        setIsAspectLocked(e.target.checked);
-                        (window as any).__cropAspectLocked = e.target.checked;
-                      }}
-                    />
-                  </label>
+                <div className="mt-4 space-y-4 bg-zinc-900/50 p-3 rounded border border-zinc-800">
+                  <Slider 
+                    label="Rotation" 
+                    min={-45} max={45} step={0.1} 
+                    value={params.crop.rotation || 0} 
+                    onChange={(v) => updateCrop('rotation', v)} 
+                  />
+                  
+                  <div className="flex items-center justify-between pt-2 border-t border-zinc-700/50">
+                    <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-semibold">Proportions</span>
+                    <label className="flex items-center gap-2 cursor-pointer group">
+                      <span className="text-[10px] text-zinc-400 group-hover:text-zinc-200">Lock Aspect</span>
+                      <input 
+                        type="checkbox" 
+                        className="w-3 h-3 accent-blue-500" 
+                        checked={isAspectLocked} 
+                        onChange={(e) => {
+                          setIsAspectLocked(e.target.checked);
+                          (window as any).__cropAspectLocked = e.target.checked;
+                        }}
+                      />
+                    </label>
+                  </div>
                 </div>
               )}
             </div>
