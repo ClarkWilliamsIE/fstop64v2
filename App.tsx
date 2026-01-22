@@ -1,4 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
+import JSZip from 'jszip'; // <--- NEW IMPORT
+import { saveAs } from 'file-saver'; // <--- NEW IMPORT
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -9,15 +11,14 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
-// --- Components ---
-
-const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current, total }) => {
+// --- Loading Overlay (Reused for Batch Export) ---
+const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center select-none">
       <div className="w-64 space-y-4">
         <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-zinc-400">
-          <span>Generating Thumbnails</span>
+          <span>{label || 'Processing'}</span>
           <span>{percentage}%</span>
         </div>
         <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
@@ -27,15 +28,14 @@ const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current,
           />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">
-          Processing {current} of {total}
+          Item {current} of {total}
         </p>
       </div>
     </div>
   );
 };
 
-// --- Helpers ---
-
+// --- Helper: Generate tiny thumbnail ---
 const generateThumbnail = async (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -44,7 +44,6 @@ const generateThumbnail = async (file: File): Promise<string> => {
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
-        // Max thumbnail size 150px
         const scale = Math.min(150 / img.width, 150 / img.height);
         canvas.width = img.width * scale;
         canvas.height = img.height * scale;
@@ -72,38 +71,24 @@ const App: React.FC = () => {
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
-  
-  // Cache for loaded "heavy" images (only for the viewport/export)
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
+  // Status States
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
   const [importProgress, setImportProgress] = useState<{ current: number, total: number } | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
+  
   const [isCropMode, setIsCropMode] = useState(false);
-
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Initial Demo Data
   useEffect(() => {
     const demoPhotos = [
-      { 
-        id: '1', 
-        name: 'Coastline.jpg', 
-        src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', 
-        thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', 
-        params: { ...DEFAULT_PARAMS } 
-      },
-      { 
-        id: '2', 
-        name: 'Urban.jpg', 
-        src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', 
-        thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', 
-        params: { ...DEFAULT_PARAMS } 
-      },
+      { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
+      { id: '2', name: 'Urban.jpg', src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
     ];
     setPhotos(demoPhotos);
     setActivePhotoId('1');
-    
-    // Preload demo images
     demoPhotos.forEach(p => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -112,22 +97,17 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // Lazy Load Image Logic for Viewport
+  // Lazy Load Logic
   useEffect(() => {
     if (!activePhotoId) return;
     if (imageElements[activePhotoId]) return;
-
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
 
     const img = new Image();
     if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
-    
-    img.onload = () => {
-      setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
-    };
+    img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
     img.src = photo.src;
-
   }, [activePhotoId, photos, imageElements]);
 
   const activePhoto = useMemo(() => photos.find(p => p.id === activePhotoId) || null, [photos, activePhotoId]);
@@ -139,11 +119,9 @@ const App: React.FC = () => {
     setPhotos(prev => prev.map(p => p.id === activePhotoId ? { ...p, params: newParams, hiddenFromEdited: false } : p));
   };
 
-  // Helper: Get Full Res Image for Export (even if not currently loaded)
+  // Helper: Get Full Res Image (on demand)
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
-    if (imageElements[photo.id]) {
-      return imageElements[photo.id];
-    }
+    if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
       const img = new Image();
       if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
@@ -153,9 +131,9 @@ const App: React.FC = () => {
     });
   };
 
+  // --- SINGLE EXPORT ---
   const processExportWithGate = async (photo: Photo) => {
     const check = canExport();
-    
     if (!check.allowed) {
       if (check.reason === 'auth') setModalType('login');
       else if (check.reason === 'quota') setModalType('paywall');
@@ -164,49 +142,90 @@ const App: React.FC = () => {
 
     try {
       setExportStatus({ current: 1, total: 1 });
-      
       const img = await getFullResImage(photo);
-
-      const canvas = document.createElement('canvas');
-      const { crop } = photo.params;
-      const sx = (crop.left / 100) * img.width;
-      const sy = (crop.top / 100) * img.height;
-      const sw = img.width * (1 - (crop.left + crop.right) / 100);
-      const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
-
-      canvas.width = sw;
-      canvas.height = sh;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-        const imgData = ctx.getImageData(0, 0, sw, sh);
-        applyPipeline(imgData, photo.params, sw, sh);
-        ctx.putImageData(imgData, 0, 0);
-        
-        const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
-        if (blob) {
-          const link = document.createElement('a');
-          link.download = `f64_${photo.name}`;
-          link.href = URL.createObjectURL(blob);
-          link.click();
-          await incrementExport();
-        }
+      const blob = await processImageToBlob(img, photo.params);
+      
+      if (blob) {
+        saveAs(blob, `f64_${photo.name}`);
+        await incrementExport();
       }
     } catch (e) {
-      console.error("Export failed", e);
-      alert("Failed to process full-resolution image.");
+      console.error(e);
+      alert("Export failed.");
     } finally {
       setExportStatus(null);
     }
   };
 
+  // --- BATCH EXPORT (ZIP) ---
+  const handleBatchExport = async () => {
+    // 1. Check Pro Status
+    if (!profile?.is_pro) {
+      setModalType('paywall');
+      return;
+    }
+
+    if (editedPhotos.length === 0) return;
+
+    const zip = new JSZip();
+    setBatchProgress({ current: 0, total: editedPhotos.length });
+
+    try {
+      for (let i = 0; i < editedPhotos.length; i++) {
+        const photo = editedPhotos[i];
+        
+        // Load & Process
+        const img = await getFullResImage(photo);
+        const blob = await processImageToBlob(img, photo.params);
+        
+        if (blob) {
+          zip.file(`f64_${photo.name}`, blob);
+        }
+
+        setBatchProgress({ current: i + 1, total: editedPhotos.length });
+        // Yield to UI
+        if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
+      }
+
+      // Generate Zip
+      const content = await zip.generateAsync({ type: "blob" });
+      saveAs(content, `fstop64_batch_${new Date().toISOString().slice(0,10)}.zip`);
+
+    } catch (e) {
+      console.error("Batch failed", e);
+      alert("Batch export failed. See console.");
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  // Helper: Core Pipeline Processing
+  const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
+    const canvas = document.createElement('canvas');
+    const { crop } = params;
+    const sx = (crop.left / 100) * img.width;
+    const sy = (crop.top / 100) * img.height;
+    const sw = img.width * (1 - (crop.left + crop.right) / 100);
+    const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
+
+    canvas.width = sw;
+    canvas.height = sh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const imgData = ctx.getImageData(0, 0, sw, sh);
+    applyPipeline(imgData, params, sw, sh);
+    ctx.putImageData(imgData, 0, 0);
+
+    return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
     const fileList = Array.from(files);
     setImportProgress({ current: 0, total: fileList.length });
-    
     const newPhotos: Photo[] = [];
 
     for (let i = 0; i < fileList.length; i++) {
@@ -222,16 +241,11 @@ const App: React.FC = () => {
         thumbnailSrc: thumbUrl,
         params: { ...DEFAULT_PARAMS } 
       });
-
       setImportProgress({ current: i + 1, total: fileList.length });
       if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
-
     setPhotos(prev => [...prev, ...newPhotos]);
-    if (!activePhotoId && newPhotos.length > 0) {
-      setActivePhotoId(newPhotos[0].id);
-    }
-
+    if (!activePhotoId && newPhotos.length > 0) setActivePhotoId(newPhotos[0].id);
     await new Promise(r => setTimeout(r, 300));
     setImportProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -239,7 +253,9 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
-      {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} />}
+      {/* Overlays */}
+      {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
+      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Zipping Batch" />}
 
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
@@ -297,7 +313,10 @@ const App: React.FC = () => {
             onSavePreset={(name) => activePhoto && setPresets(prev => [...prev, { id: Date.now().toString(), name: name || `New Preset`, params: { ...activePhoto.params } }])}
             onApplyPreset={(p) => handleUpdateParams({ ...p.params })}
             editedPhotos={editedPhotos}
-            onBatchExportEdited={() => alert("Batch export available for PRO members.")}
+            
+            // --- UPDATED: CONNECTING THE REAL BATCH FUNCTION ---
+            onBatchExportEdited={handleBatchExport} 
+            
             onSelectPhoto={setActivePhotoId}
             onDismissPhoto={(id) => setPhotos(prev => prev.map(p => p.id === id ? { ...p, hiddenFromEdited: true } : p))}
             onUndoDismiss={() => {}}
