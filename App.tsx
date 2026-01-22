@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
-import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
+import exifr from 'exifr'; // <--- NEW IMPORT
+import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
 import TopBar from './components/TopBar';
@@ -14,6 +15,41 @@ import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
+
+// --- HELPER: RAW DETECTION ---
+const isRawFile = (file: File) => {
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw'].includes(ext || '');
+};
+
+// --- HELPER: EXTRACT PREVIEW FROM RAW ---
+const loadImageUrl = async (file: File): Promise<string> => {
+  if (isRawFile(file)) {
+    try {
+      // 1. Try to get the large preview
+      let blob = await exifr.preview(file);
+      
+      // 2. If no preview, try the thumbnail
+      if (!blob) {
+        blob = await exifr.thumbnail(file);
+      }
+
+      // 3. If we found something, convert to URL
+      if (blob) {
+        return URL.createObjectURL(blob);
+      } else {
+        console.warn("No embedded preview found in RAW file");
+        // Fallback: Return original (might fail in img tag but worth a shot)
+        return URL.createObjectURL(file);
+      }
+    } catch (e) {
+      console.error("Failed to parse RAW", e);
+      return URL.createObjectURL(file);
+    }
+  }
+  // Standard JPG/PNG
+  return URL.createObjectURL(file);
+};
 
 // --- HELPER: AUTO CROP MATH ---
 const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
@@ -71,27 +107,42 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
+// --- Thumbnail Helper (Updated for RAW) ---
 const generateThumbnail = async (file: File): Promise<string> => {
+  // If RAW, try to extract thumbnail using exifr
+  if (isRawFile(file)) {
+      try {
+          const blob = await exifr.thumbnail(file);
+          if (blob) return URL.createObjectURL(blob);
+          // Fallback to preview if thumbnail missing
+          const preview = await exifr.preview(file);
+          if (preview) return URL.createObjectURL(preview);
+      } catch (e) {
+          console.error("Thumb extraction failed", e);
+      }
+  }
+
   return new Promise((resolve) => {
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        const scale = Math.min(150 / img.width, 150 / img.height);
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-        if (ctx) {
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : e.target?.result as string), 'image/jpeg', 0.7);
-        } else {
-            resolve(e.target?.result as string);
-        }
-      };
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+    // If not RAW, or if RAW extraction failed, use standard method
+    // (Note: Standard method will fail for RAWs in basic Image(), so we use loadImageUrl helper inside)
+    loadImageUrl(file).then(url => {
+        const img = new Image();
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            const scale = Math.min(150 / img.width, 150 / img.height);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            if (ctx) {
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : url), 'image/jpeg', 0.7);
+            } else {
+                resolve(url);
+            }
+        };
+        img.onerror = () => resolve(url); // Return generic URL if fail
+        img.src = url;
+    });
   });
 };
 
@@ -149,7 +200,7 @@ const App: React.FC = () => {
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
     const img = new Image();
-    if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
+    // No crossOrigin needed for blob URLs usually, but safe to keep
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
     img.src = photo.src;
   }, [activePhotoId, photos, imageElements]);
@@ -176,7 +227,6 @@ const App: React.FC = () => {
     if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
       const img = new Image();
-      if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
       img.onload = () => resolve(img);
       img.onerror = reject;
       img.src = photo.src;
@@ -245,7 +295,7 @@ const App: React.FC = () => {
       const blob = await processImageToBlob(img, photo.params);
       
       if (blob) {
-        saveAs(blob, `f64_${photo.name}`);
+        saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); // Ensure exported file is JPG
         await incrementExport();
       }
     } catch (e) {
@@ -279,7 +329,7 @@ const App: React.FC = () => {
         const blob = await processImageToBlob(img, photo.params);
         
         if (blob) {
-          saveAs(blob, `f64_${photo.name}`);
+          saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`);
           await incrementExport();
         }
 
@@ -304,8 +354,11 @@ const App: React.FC = () => {
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      const fullResUrl = URL.createObjectURL(file);
+      
+      // Use the new loader that handles RAWs
+      const fullResUrl = await loadImageUrl(file);
       const thumbUrl = await generateThumbnail(file);
+      
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       
       newPhotos.push({ 
@@ -349,13 +402,22 @@ const App: React.FC = () => {
         onAbout={() => setShowAbout(true)} 
       />
       
+      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
       
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
-      <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileChange} />
+      {/* UPDATE INPUT TO ACCEPT RAW EXTENSIONS */}
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        className="hidden" 
+        accept="image/*,.arw,.cr2,.cr3,.nef,.dng,.orf,.raf,.rw2,.pef,.srw" 
+        multiple 
+        onChange={handleFileChange} 
+      />
 
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden relative">
         <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0 overflow-hidden h-1/2 md:h-auto">
@@ -376,8 +438,7 @@ const App: React.FC = () => {
                     Import Photos
                 </button>
                 <div className="mt-4 flex flex-col items-center gap-1">
-                   <span className="text-xs text-zinc-600">Supports JPG, PNG</span>
-                   {/* NEW DISCLAIMER */}
+                   <span className="text-xs text-zinc-600">JPG, PNG, RAW (ARW, CR2, NEF, DNG...)</span>
                    <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5">
                       <span className="w-1 h-1 bg-blue-500 rounded-full"></span>
                       Free login required to export
