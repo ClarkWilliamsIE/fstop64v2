@@ -110,41 +110,47 @@ export function useAuthSubscription() {
   };
 
   // --- UPDATED: Connects to Vercel API for Stripe Checkout ---
-  const upgradeToPro = async () => {
-    if (isMockMode) {
-       alert("Payment disabled in Mock Mode.");
-       return;
-    }
-    
-    if (!user) {
+ const upgradeToPro = async () => {
+    if (isMockMode || !user) {
       alert("Please sign in to upgrade.");
       return;
     }
 
     try {
-      // Call our new Vercel API endpoint
       const res = await fetch('/api/checkout', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ user: { id: user.id, email: user.email } }),
       });
 
-      const data = await res.json();
+      // 1. Try to parse JSON
+      let data;
+      try {
+        data = await res.json();
+      } catch (e) {
+        // If it's not JSON, it's likely a crash (HTML response)
+        const text = await res.text();
+        throw new Error(`Server Crash: ${text.substring(0, 100)}...`);
+      }
+
+      // 2. Check for explicit Server Error
+      if (!res.ok || data.error) {
+        throw new Error(data.error || "Unknown Server Error");
+      }
       
+      // 3. Success
       if (data.url) {
-        // Redirect user to Stripe's hosted checkout page
         window.location.href = data.url;
       } else {
-        throw new Error("No checkout URL returned");
+        throw new Error("No checkout URL returned (and no error message)");
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Checkout failed:", error);
-      alert("Failed to start checkout. Please try again.");
+      // ALERT THE ACTUAL ERROR
+      alert(`Checkout Failed: ${error.message}`);
     }
   };
-
+  
   const canExport = (): { allowed: boolean; reason?: 'auth' | 'quota' } => {
     if (!user) return { allowed: false, reason: 'auth' };
     if (profile?.is_pro) return { allowed: true };
