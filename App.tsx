@@ -12,7 +12,7 @@ import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
 // --- IMPORT YOUR BETA SANDBOX ---
-// Ensure you have created this file!
+// Ensure you have created src/BetaApp.tsx!
 import BetaApp from './BetaApp';
 
 // --- Loading Overlay ---
@@ -61,7 +61,6 @@ const generateThumbnail = async (file: File): Promise<string> => {
 
 const App: React.FC = () => {
   // 1. --- BETA MODE LOGIC ---
-  // This reads your preference from the browser's local storage
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -73,19 +72,26 @@ const App: React.FC = () => {
     const newState = !isBeta;
     setIsBeta(newState);
     localStorage.setItem('fstop64_beta_mode', String(newState));
-    // Reload to ensure a completely fresh start for the new mode
     window.location.reload();
   };
 
   // 2. --- TRAFFIC CONTROL ---
-  // If Beta is active, we immediately render the Beta App and stop here.
   if (isBeta) {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
   // 3. --- STABLE APP LOGIC ---
-  // If Beta is OFF, we render the standard, stable application below.
-  const { user, profile, signIn, signOut, upgradeToPro, canExport, incrementExport } = useAuthSubscription();
+  const { 
+    user, 
+    profile, 
+    signIn, 
+    signOut, 
+    upgradeToPro, 
+    manageSubscription, // <--- NEW: Destructure this!
+    canExport, 
+    incrementExport 
+  } = useAuthSubscription();
+
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
 
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -276,7 +282,10 @@ const App: React.FC = () => {
         onSignOut={signOut}
         onUpgrade={upgradeToPro}
         
-        // --- PASSING TOGGLE PROPS TO STABLE TOPBAR ---
+        // --- NEW: CONNECT MANAGE BUTTON ---
+        onManage={manageSubscription}
+
+        // --- BETA TOGGLE ---
         isBeta={false} 
         onToggleBeta={toggleBeta} 
       />
