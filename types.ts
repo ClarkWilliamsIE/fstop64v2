@@ -19,11 +19,13 @@ export interface ColorGrading {
   balance: number;
 }
 
+// --- UPDATED CROP PARAMS ---
 export interface CropParams {
   top: number;
   bottom: number;
   left: number;
   right: number;
+  rotation: number; // New field (-45 to 45)
 }
 
 export interface Point {
@@ -51,11 +53,10 @@ export interface EditParams {
   curveLights: number;
   curveDarks: number;
   curveShadows: number;
-  curvePoints: Point[]; // New field
+  curvePoints: Point[];
   
   hsl: Record<HSLChannel, HSLParams>;
-  colorGrading: ColorGrading; // New field
-  
+  colorGrading: ColorGrading;
   vignette: number;
   crop: CropParams;
 }
@@ -65,7 +66,7 @@ export interface UserProfile {
   email: string;
   is_pro: boolean;
   export_count: number;
-  stripe_customer_id?: string; // <--- NEW FIELD
+  stripe_customer_id?: string;
 }
 
 export interface Preset {
@@ -128,7 +129,7 @@ export const DEFAULT_PARAMS: EditParams = {
   },
   
   vignette: 0,
-  crop: { top: 0, bottom: 0, left: 0, right: 0 },
+  crop: { top: 0, bottom: 0, left: 0, right: 0, rotation: 0 },
 };
 
 export const isPhotoEdited = (params: EditParams): boolean => {
@@ -147,18 +148,18 @@ export const isPhotoEdited = (params: EditParams): boolean => {
   if (params.vignette !== 0) return true;
   if (params.profile !== 'adobe-color') return true;
   
-  // Safe curve check (handles old data)
   if (params.curvePoints && params.curvePoints.length > 2) return true;
   if (params.curvePoints && (params.curvePoints[0].y !== 0 || params.curvePoints[1].y !== 1)) return true;
 
-  // Safe color grading check
   const cg = params.colorGrading;
   if (cg) {
     if (cg.shadows.saturation !== 0 || cg.midtones.saturation !== 0 || cg.highlights.saturation !== 0) return true;
   }
 
   const { crop } = params;
-  if (crop.top !== 0 || crop.bottom !== 0 || crop.left !== 0 || crop.right !== 0) return true;
+  // Check rotation too
+  if (crop.top !== 0 || crop.bottom !== 0 || crop.left !== 0 || crop.right !== 0 || (crop.rotation || 0) !== 0) return true;
+
   for (const key in params.hsl) {
     const h = params.hsl[key as HSLChannel];
     if (h.hue !== 0 || h.saturation !== 0 || h.luminance !== 0) return true;
