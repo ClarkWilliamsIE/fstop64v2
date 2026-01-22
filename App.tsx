@@ -16,7 +16,6 @@ import Privacy from './Privacy';
 import Terms from './Terms';
 
 // --- HELPER: AUTO CROP MATH ---
-// Calculates the largest rectangle (preserving aspect ratio) that fits inside a rotated image
 const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   if (rotationDeg === 0) return { top: 0, bottom: 0, left: 0, right: 0 };
 
@@ -24,38 +23,24 @@ const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   const cos = Math.cos(rad);
   const sin = Math.sin(rad);
 
-  // 1. Calculate the size of the "Rotated Bounding Box" (The Canvas size)
   const bbW = imgW * cos + imgH * sin;
   const bbH = imgW * sin + imgH * cos;
 
-  // 2. Calculate the "Safe Scale" factor to fit the original image inside
-  // This formula ensures we zoom in enough to hide the empty corners
-  // while maintaining the original aspect ratio.
-  // Formula derived from geometric intersection of rotated rectangles.
   const aspect = imgW / imgH;
   let scale = 1;
 
   if (aspect >= 1) {
-      // Landscapeish
       scale = imgH / (imgW * sin + imgH * cos);
   } else {
-      // Portraitish
       scale = imgW / (imgW * cos + imgH * sin);
   }
 
-  // However, strict corner constraining often requires checking both dimensions:
-  // A robust approximation for UI sliders to ensure NO transparent corners:
   const safeW = imgW * scale;
   const safeH = imgH * scale;
   
-  // 3. Convert that safe area into Inset Percentages relative to the Bounding Box
-  // The Bounding Box is what the "Crop" percentages are relative to.
-  
-  // Calculate how much empty space is on the X and Y axes total
   const emptyX = bbW - safeW;
   const emptyY = bbH - safeH;
 
-  // We want to center the crop, so split empty space by 2
   const insetX = (emptyX / 2) / bbW * 100;
   const insetY = (emptyY / 2) / bbH * 100;
 
@@ -176,13 +161,8 @@ const App: React.FC = () => {
   const handleUpdateParams = (newParams: EditParams) => {
     if (!activePhotoId) return;
 
-    // --- AUTO CROP LOGIC ---
-    // If Rotation changed, automatically update crop to hide blank corners
     if (activePhoto && activeImage && newParams.crop.rotation !== activePhoto.params.crop.rotation) {
-        // Calculate safe insets
         const safeCrop = calculateAutoCrop(activeImage.width, activeImage.height, newParams.crop.rotation || 0);
-        
-        // Apply safe insets
         newParams.crop.top = safeCrop.top;
         newParams.crop.bottom = safeCrop.bottom;
         newParams.crop.left = safeCrop.left;
@@ -232,7 +212,6 @@ const App: React.FC = () => {
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
     const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
 
-    // Safety check for tiny crops
     if (sw <= 0 || sh <= 0) return null;
 
     canvas.width = sw;
@@ -384,7 +363,7 @@ const App: React.FC = () => {
             {activeImage ? (
               <Viewport image={activeImage} params={activePhoto!.params} isCropMode={isCropMode} onUpdateCrop={(crop) => handleUpdateParams({ ...activePhoto!.params, crop })} />
             ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-700 animate-pulse text-center">
+              <div className="flex flex-col items-center justify-center text-zinc-700 text-center animate-pulse">
                  <div className="w-16 h-16 mb-4 text-zinc-800">
                     <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
@@ -396,7 +375,14 @@ const App: React.FC = () => {
                 >
                     Import Photos
                 </button>
-                <span className="mt-2 text-xs text-zinc-600">Supports JPG, PNG</span>
+                <div className="mt-4 flex flex-col items-center gap-1">
+                   <span className="text-xs text-zinc-600">Supports JPG, PNG</span>
+                   {/* NEW DISCLAIMER */}
+                   <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5">
+                      <span className="w-1 h-1 bg-blue-500 rounded-full"></span>
+                      Free login required to export
+                   </span>
+                </div>
               </div>
             )}
           </div>
