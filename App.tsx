@@ -16,6 +16,32 @@ import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
 
+// --- HELPER: ERROR IMAGE GENERATOR ---
+// Creates a placeholder image so the UI doesn't look broken if RAW fails
+const createErrorImage = (text: string) => {
+  const canvas = document.createElement('canvas');
+  canvas.width = 300;
+  canvas.height = 200;
+  const ctx = canvas.getContext('2d');
+  if (ctx) {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, 300, 200);
+    ctx.strokeStyle = '#ef4444'; // Red
+    ctx.lineWidth = 4;
+    ctx.strokeRect(10, 10, 280, 180);
+    ctx.fillStyle = '#ef4444';
+    ctx.font = 'bold 24px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('RAW PARSE', 150, 80);
+    ctx.fillText('FAILED', 150, 120);
+    ctx.font = '12px sans-serif';
+    ctx.fillStyle = '#71717a';
+    ctx.fillText(text.slice(0, 20), 150, 160);
+  }
+  return canvas.toDataURL('image/jpeg');
+};
+
 // --- HELPER: RAW DETECTION ---
 const isRawFile = (file: File) => {
   const ext = file.name.split('.').pop()?.toLowerCase();
@@ -24,22 +50,36 @@ const isRawFile = (file: File) => {
 
 // --- HELPER: ROBUST RAW LOADER ---
 const loadRawImage = async (file: File): Promise<string | null> => {
+  const isDNG = file.name.toLowerCase().endsWith('.dng');
+  
   try {
-    // 1. Try extracting the largest embedded JPEG preview
-    let blob = await exifr.preview(file);
-    
-    // 2. If no large preview, try the smaller thumbnail
-    if (!blob) {
-      blob = await exifr.thumbnail(file);
+    let blob: Blob | null = null;
+
+    // STRATEGY FOR DNGs: 
+    // DNGs often have the JPEG in the 'thumbnail' IFD, not the 'preview' IFD.
+    // We try thumbnail first for DNG.
+    if (isDNG) {
+       console.log(`Attempting DNG extraction for ${file.name}...`);
+       blob = await exifr.thumbnail(file);
+       if (!blob) {
+         console.log("DNG thumbnail not found, trying preview...");
+         blob = await exifr.preview(file);
+       }
+    } else {
+       // Standard RAWs (CR2, ARW) usually prefer preview
+       blob = await exifr.preview(file);
+       if (!blob) blob = await exifr.thumbnail(file);
     }
 
     if (blob) {
+      console.log(`Success: Extracted ${blob.size} bytes from ${file.name}`);
       return URL.createObjectURL(blob);
+    } else {
+      console.warn(`Failed: No embedded JPEG found in ${file.name}`);
+      return null;
     }
-    
-    return null;
   } catch (e) {
-    console.warn("RAW extraction warning:", e);
+    console.warn(`Error parsing ${file.name}:`, e);
     return null;
   }
 };
@@ -104,9 +144,8 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
 const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
-    
-    // Safety timeout: if image takes too long, resolve with original URL so UI doesn't hang
-    const timer = setTimeout(() => resolve(existingUrl), 1500);
+    // Shorter timeout to keep UI snappy
+    const timer = setTimeout(() => resolve(existingUrl), 1000);
 
     img.onload = () => {
       clearTimeout(timer);
@@ -125,8 +164,6 @@ const generateThumbnail = async (file: File, existingUrl: string): Promise<strin
     
     img.onerror = () => {
         clearTimeout(timer);
-        // If generating a fancy thumbnail fails, just use the main URL.
-        // It's heavy, but better than a blank space.
         resolve(existingUrl); 
     };
     
@@ -188,7 +225,6 @@ const App: React.FC = () => {
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
     const img = new Image();
-    // Important: Handle error if the blob URL is invalid
     img.onerror = () => {
         console.error("Could not load image source for:", photo.name);
     };
@@ -346,25 +382,28 @@ const App: React.FC = () => {
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       let fullResUrl = '';
+      let thumbUrl = '';
       
-      // 1. Try to extract RAW
+      // 1. RAW HANDLING
       if (isRawFile(file)) {
           const rawUrl = await loadRawImage(file);
           if (rawUrl) {
               fullResUrl = rawUrl;
+              thumbUrl = rawUrl; // Reuse the embedded JPEG as thumb
           } else {
-              // FAIL-SAFE: If RAW extraction fails, try loading file directly.
-              // This ensures the photo is ADDED to the filmstrip even if broken.
-              console.warn(`Could not extract preview for ${file.name}, using fallback.`);
-              fullResUrl = URL.createObjectURL(file);
+              // DNG Fallback: If parsing failed, show "Error Image"
+              // We do NOT use createObjectURL(file) for DNG because browsers
+              // can't render RAW data natively. It would just be transparent/broken.
+              console.warn(`Could not parse DNG: ${file.name}`);
+              fullResUrl = createErrorImage(file.name);
+              thumbUrl = fullResUrl; 
           }
       } else {
-          // Standard Image
+          // 2. STANDARD IMAGE (JPG/PNG)
           fullResUrl = URL.createObjectURL(file);
+          // Generate a smaller thumb for performance
+          thumbUrl = await generateThumbnail(file, fullResUrl);
       }
-      
-      // 2. Generate Thumb (Safely)
-      const thumbUrl = await generateThumbnail(file, fullResUrl);
       
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       
@@ -376,10 +415,9 @@ const App: React.FC = () => {
         params: { ...DEFAULT_PARAMS } 
       });
       setImportProgress({ current: i + 1, total: fileList.length });
-      // Small pause to keep UI responsive
       if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
-
+    
     setPhotos(prev => [...prev, ...newPhotos]);
     if (!activePhotoId && newPhotos.length > 0) setActivePhotoId(newPhotos[0].id);
     
@@ -412,7 +450,6 @@ const App: React.FC = () => {
         onAbout={() => setShowAbout(true)} 
       />
       
-      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
