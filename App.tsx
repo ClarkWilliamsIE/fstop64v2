@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
@@ -10,6 +9,30 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
+// --- New Component: Loading Overlay ---
+const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current, total }) => {
+  const percentage = Math.round((current / total) * 100);
+  return (
+    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex flex-col items-center justify-center select-none">
+      <div className="w-64 space-y-4">
+        <div className="flex justify-between text-xs font-bold uppercase tracking-widest text-zinc-400">
+          <span>Importing Assets</span>
+          <span>{percentage}%</span>
+        </div>
+        <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
+          <div 
+            className="h-full bg-blue-500 transition-all duration-100 ease-out" 
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+        <p className="text-center text-[10px] text-zinc-600 font-mono">
+          Processing {current} of {total}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, canExport, incrementExport } = useAuthSubscription();
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
@@ -18,13 +41,17 @@ const App: React.FC = () => {
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
+  
+  // Cache for loaded "heavy" images (only for the viewport)
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
+  
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
-  const [lastDismissedId, setLastDismissedId] = useState<string | null>(null);
+  const [importProgress, setImportProgress] = useState<{ current: number, total: number } | null>(null);
   const [isCropMode, setIsCropMode] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Initial Demo Data
   useEffect(() => {
     const demoPhotos = [
       { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', params: { ...DEFAULT_PARAMS } },
@@ -32,6 +59,7 @@ const App: React.FC = () => {
     ];
     setPhotos(demoPhotos);
     setActivePhotoId('1');
+    // Preload demo images
     demoPhotos.forEach(p => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -39,6 +67,29 @@ const App: React.FC = () => {
       img.onload = () => setImageElements(prev => ({ ...prev, [p.id]: img }));
     });
   }, []);
+
+  // --- Lazy Load Image Logic ---
+  // We only load the heavy HTMLImageElement when the user actually selects the photo.
+  // This prevents crashing when importing 500+ photos.
+  useEffect(() => {
+    if (!activePhotoId) return;
+    
+    // If already loaded, do nothing
+    if (imageElements[activePhotoId]) return;
+
+    const photo = photos.find(p => p.id === activePhotoId);
+    if (!photo) return;
+
+    const img = new Image();
+    // For local blob URLs, crossOrigin isn't needed, but good for remote
+    if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
+    
+    img.onload = () => {
+      setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
+    };
+    img.src = photo.src;
+
+  }, [activePhotoId, photos, imageElements]);
 
   const activePhoto = useMemo(() => photos.find(p => p.id === activePhotoId) || null, [photos, activePhotoId]);
   const activeImage = useMemo(() => activePhotoId ? imageElements[activePhotoId] : null, [imageElements, activePhotoId]);
@@ -84,30 +135,60 @@ const App: React.FC = () => {
     }
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // --- Optimized File Import ---
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (files) {
-      Array.from(files).forEach((file: File) => {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-          const id = Math.random().toString(36).substr(2, 9);
-          const src = event.target?.result as string;
-          const newPhoto: Photo = { id, name: file.name, src, params: { ...DEFAULT_PARAMS } };
-          const img = new Image();
-          img.onload = () => {
-            setImageElements(prev => ({ ...prev, [id]: img }));
-            setPhotos(prev => [...prev, newPhoto]);
-            setActivePhotoId(id);
-          };
-          img.src = src;
-        };
-        reader.readAsDataURL(file);
+    if (!files || files.length === 0) return;
+
+    const fileList = Array.from(files);
+    setImportProgress({ current: 0, total: fileList.length });
+    
+    // We'll build a temporary array to batch update the state at the end
+    // (or update in chunks if you want instant feedback, but one update is cleaner for React)
+    const newPhotos: Photo[] = [];
+
+    for (let i = 0; i < fileList.length; i++) {
+      const file = fileList[i];
+      
+      // CRITICAL FIX: Use createObjectURL instead of FileReader
+      // This creates a virtual pointer to the file on disk, using ~0 RAM.
+      const objectUrl = URL.createObjectURL(file);
+      const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+      
+      newPhotos.push({ 
+        id, 
+        name: file.name, 
+        src: objectUrl, 
+        params: { ...DEFAULT_PARAMS } 
       });
+
+      // Update progress bar
+      setImportProgress({ current: i + 1, total: fileList.length });
+      
+      // Yield to the main thread every 5 photos so the UI doesn't freeze
+      if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
     }
+
+    setPhotos(prev => [...prev, ...newPhotos]);
+    
+    // If no photo was selected before, select the first new one
+    if (!activePhotoId && newPhotos.length > 0) {
+      setActivePhotoId(newPhotos[0].id);
+    }
+
+    // Small delay to show 100% completion before closing
+    await new Promise(r => setTimeout(r, 500));
+    setImportProgress(null);
+    
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
+      {/* Loading Overlay */}
+      {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} />}
+
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
         onExport={() => activePhoto && activeImage && processExportWithGate(activePhoto, activeImage)}
@@ -133,7 +214,17 @@ const App: React.FC = () => {
             {activeImage ? (
               <Viewport image={activeImage} params={activePhoto!.params} isCropMode={isCropMode} onUpdateCrop={(crop) => handleUpdateParams({ ...activePhoto!.params, crop })} />
             ) : (
-              <div className="text-zinc-700 font-medium text-sm animate-pulse text-center">Select an asset to begin developing</div>
+              <div className="flex flex-col items-center justify-center text-zinc-700 animate-pulse">
+                {activePhotoId ? (
+                  // Show loading spinner if photo is selected but image not yet loaded
+                  <>
+                    <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <span className="text-xs font-bold uppercase tracking-widest">Developing Raw Asset...</span>
+                  </>
+                ) : (
+                  <span className="font-medium text-sm">Select an asset to begin developing</span>
+                )}
+              </div>
             )}
           </div>
           
