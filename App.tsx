@@ -219,13 +219,17 @@ const App: React.FC = () => {
     }
   };
 
+// --- UPDATED BATCH EXPORT ---
   const handleBatchExport = async () => {
-    // Basic check for signed out users
+    // 1. CHECK LOGIN FIRST
+    // If we don't check this first, the code sees you have no profile
+    // and assumes you need to "Upgrade to Pro" instead of just "Sign In".
     if (!user) {
         setModalType('login_prompt');
         return;
     }
 
+    // 2. CHECK PRO STATUS SECOND
     if (!profile?.is_pro) {
       setModalType('paywall');
       return;
@@ -233,11 +237,13 @@ const App: React.FC = () => {
 
     if (editedPhotos.length === 0) return;
 
+    // 3. START EXPORT
     setBatchProgress({ current: 0, total: editedPhotos.length });
 
     try {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
+        
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
         
@@ -247,6 +253,8 @@ const App: React.FC = () => {
         }
 
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
+        
+        // Pause to prevent browser throttling
         await new Promise(r => setTimeout(r, 800)); 
       }
 
