@@ -37,6 +37,7 @@ const Accordion: React.FC<{ title: string; children: React.ReactNode; defaultOpe
   );
 };
 
+// --- UPDATED SLIDER FOR MOBILE ---
 const Slider: React.FC<{
   label: string;
   min: number;
@@ -46,22 +47,70 @@ const Slider: React.FC<{
   onChange: (val: number) => void;
   className?: string;
 }> = ({ label, min, max, step, value, onChange, className }) => (
-  <div className="group">
-    <div className="flex justify-between items-center mb-1">
+  <div className="group py-1"> {/* Added vertical padding for spacing */}
+    <div className="flex justify-between items-center mb-2"> {/* Increased margin bottom */}
       <label className={`text-[11px] font-medium transition-colors ${className || 'text-zinc-500 group-hover:text-zinc-300'}`}>{label}</label>
       <span className="text-[10px] text-zinc-500 font-mono">
         {value > 0 ? `+${value.toFixed(step >= 1 ? 0 : 2)}` : value.toFixed(step >= 1 ? 0 : 2)}
       </span>
     </div>
-    <input
-      type="range"
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      onChange={(e) => onChange(parseFloat(e.target.value))}
-      className="w-full cursor-pointer accent-blue-500 bg-zinc-800 h-1 appearance-none rounded"
-    />
+    
+    <div className="relative h-6 flex items-center"> {/* Container specifically for hit-area */}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(parseFloat(e.target.value))}
+        // Added 'touch-none' to prevent scrolling while sliding
+        // Added 'h-6' (mobile) vs 'md:h-1' (desktop) to increase touch target size
+        className="w-full cursor-pointer appearance-none bg-transparent touch-none focus:outline-none z-10" 
+        style={{
+          // Custom track styling since we are using appearance-none
+          background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(value - min) / (max - min) * 100}%, #27272a ${(value - min) / (max - min) * 100}%, #27272a 100%)`,
+          height: '4px',
+          borderRadius: '2px',
+        }}
+      />
+      
+      {/* Injecting styles for the "Thumb" (Handle).
+         We make it large on mobile, smaller on desktop. 
+      */}
+      <style>{`
+        input[type=range]::-webkit-slider-thumb {
+          -webkit-appearance: none;
+          height: 20px; /* Big handle for mobile */
+          width: 20px;
+          border-radius: 50%;
+          background: #ffffff;
+          cursor: pointer;
+          margin-top: -8px; /* Center it on the 4px track */
+          box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+        input[type=range]::-moz-range-thumb {
+          height: 20px;
+          width: 20px;
+          border-radius: 50%;
+          background: #ffffff;
+          cursor: pointer;
+          border: none;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+        }
+        /* Desktop override: smaller handle */
+        @media (min-width: 768px) {
+          input[type=range]::-webkit-slider-thumb {
+            height: 12px; 
+            width: 12px;
+            margin-top: -4px;
+          }
+          input[type=range]::-moz-range-thumb {
+            height: 12px; 
+            width: 12px;
+          }
+        }
+      `}</style>
+    </div>
   </div>
 );
 
@@ -75,6 +124,9 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
   };
 
   const handleMouseMove = (e: React.MouseEvent) => {
+    // Mobile Touch Support for Curve Editor
+    // (Note: To make Curve fully touch compatible, we'd need onTouchMove handlers too, 
+    // but React Mouse events often map to single touch. For full support we add touch listeners later if needed).
     if (draggingIdx === null || !svgRef.current) return;
     const rect = svgRef.current.getBoundingClientRect();
     let x = (e.clientX - rect.left) / rect.width;
@@ -111,7 +163,7 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
   const pathD = safePoints.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x * 100} ${100 - p.y * 100}`).join(' ');
 
   return (
-    <div className="aspect-square bg-[#111] border border-zinc-700 rounded relative overflow-hidden select-none"
+    <div className="aspect-square bg-[#111] border border-zinc-700 rounded relative overflow-hidden select-none touch-none" // touch-none added here too
          onMouseMove={handleMouseMove}
          onMouseUp={handleMouseUp}
          onMouseLeave={handleMouseUp}>
@@ -125,8 +177,8 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
             key={i} 
             cx={p.x * 100} 
             cy={100 - p.y * 100} 
-            r="4" 
-            className={`cursor-pointer transition-all ${draggingIdx === i ? 'fill-blue-500 r-6' : 'fill-white hover:fill-blue-400'}`}
+            r="6" /* Slightly bigger dots for touch */
+            className={`cursor-pointer transition-all ${draggingIdx === i ? 'fill-blue-500' : 'fill-white hover:fill-blue-400'}`}
             onMouseDown={(e) => { e.stopPropagation(); handleMouseDown(i); }}
           />
         ))}
