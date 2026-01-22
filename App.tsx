@@ -10,12 +10,8 @@ import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
-
-// --- IMPORT YOUR BETA SANDBOX ---
-// Ensure you have created src/BetaApp.tsx!
 import BetaApp from './BetaApp';
 
-// --- Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
   return (
@@ -34,7 +30,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
-// --- Helper: Generate tiny thumbnail ---
 const generateThumbnail = async (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -60,7 +55,6 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
-  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -75,23 +69,11 @@ const App: React.FC = () => {
     window.location.reload();
   };
 
-  // 2. --- TRAFFIC CONTROL ---
   if (isBeta) {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
-  // 3. --- STABLE APP LOGIC ---
-  const { 
-    user, 
-    profile, 
-    signIn, 
-    signOut, 
-    upgradeToPro, 
-    manageSubscription, // <--- NEW: Destructure this!
-    canExport, 
-    incrementExport 
-  } = useAuthSubscription();
-
+  const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
 
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -127,7 +109,6 @@ const App: React.FC = () => {
     if (imageElements[activePhotoId]) return;
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
-
     const img = new Image();
     if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
@@ -155,19 +136,42 @@ const App: React.FC = () => {
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
+    // 1. ROTATION STEP
+    let sourceCanvas = document.createElement('canvas');
+    const rot = params.crop.rotation || 0;
+    
+    if (rot === 0) {
+      sourceCanvas.width = img.width;
+      sourceCanvas.height = img.height;
+      sourceCanvas.getContext('2d')?.drawImage(img, 0, 0);
+    } else {
+      const rad = (rot * Math.PI) / 180;
+      const cw = Math.abs(img.width * Math.cos(rad)) + Math.abs(img.height * Math.sin(rad));
+      const ch = Math.abs(img.width * Math.sin(rad)) + Math.abs(img.height * Math.cos(rad));
+      sourceCanvas.width = cw;
+      sourceCanvas.height = ch;
+      const ctx = sourceCanvas.getContext('2d');
+      if (ctx) {
+        ctx.translate(cw / 2, ch / 2);
+        ctx.rotate(rad);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      }
+    }
+
+    // 2. CROP & PIPELINE STEP
     const canvas = document.createElement('canvas');
     const { crop } = params;
-    const sx = (crop.left / 100) * img.width;
-    const sy = (crop.top / 100) * img.height;
-    const sw = img.width * (1 - (crop.left + crop.right) / 100);
-    const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
+    const sx = (crop.left / 100) * sourceCanvas.width;
+    const sy = (crop.top / 100) * sourceCanvas.height;
+    const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
+    const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
 
     canvas.width = sw;
     canvas.height = sh;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
 
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
     const imgData = ctx.getImageData(0, 0, sw, sh);
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
@@ -281,11 +285,7 @@ const App: React.FC = () => {
         onSignIn={signIn}
         onSignOut={signOut}
         onUpgrade={upgradeToPro}
-        
-        // --- NEW: CONNECT MANAGE BUTTON ---
         onManage={manageSubscription}
-
-        // --- BETA TOGGLE ---
         isBeta={false} 
         onToggleBeta={toggleBeta} 
       />
