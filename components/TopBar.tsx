@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { UserProfile } from '../types';
 
@@ -14,11 +13,13 @@ interface TopBarProps {
   profile: UserProfile | null;
   onSignIn: () => void;
   onSignOut: () => void;
+  // NEW PROP
+  onUpgrade: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({ 
   onOpen, onExport, onReset, onCopy, onPaste, canPaste, isExporting, 
-  user, profile, onSignIn, onSignOut
+  user, profile, onSignIn, onSignOut, onUpgrade 
 }) => {
   return (
     <header className="h-14 bg-[#1e1e1e] border-b border-zinc-800 flex items-center justify-between px-6 z-20 shadow-lg shrink-0">
@@ -42,12 +43,23 @@ const TopBar: React.FC<TopBarProps> = ({
           <div className="flex items-center gap-4 border-r border-zinc-800 pr-6 h-8">
             <div className="text-right">
               <p className="text-[9px] text-zinc-500 font-bold uppercase tracking-widest">{user.email?.split('@')[0]}</p>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 justify-end">
                 <span className={`text-[10px] font-bold ${profile?.is_pro ? 'text-blue-400' : 'text-zinc-400'}`}>
                   {profile?.is_pro ? 'PRO MEMBER' : `${30 - (profile?.export_count || 0)} FREE EXPORTS LEFT`}
                 </span>
               </div>
             </div>
+            
+            {/* NEW UPGRADE BUTTON (Visible only if NOT Pro) */}
+            {!profile?.is_pro && (
+               <button 
+                 onClick={onUpgrade}
+                 className="px-3 py-1 bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-400 hover:to-orange-500 text-white text-[10px] font-bold uppercase tracking-widest rounded shadow-lg shadow-orange-500/20 transition-all transform hover:scale-105"
+               >
+                 Upgrade
+               </button>
+            )}
+
             <button onClick={onSignOut} className="text-[10px] text-zinc-600 hover:text-white transition-colors uppercase font-bold tracking-widest">Sign Out</button>
           </div>
         ) : (
