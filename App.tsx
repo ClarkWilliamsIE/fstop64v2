@@ -15,6 +15,58 @@ import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
 
+// --- HELPER: AUTO CROP MATH ---
+// Calculates the largest rectangle (preserving aspect ratio) that fits inside a rotated image
+const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
+  if (rotationDeg === 0) return { top: 0, bottom: 0, left: 0, right: 0 };
+
+  const rad = Math.abs((rotationDeg * Math.PI) / 180);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+
+  // 1. Calculate the size of the "Rotated Bounding Box" (The Canvas size)
+  const bbW = imgW * cos + imgH * sin;
+  const bbH = imgW * sin + imgH * cos;
+
+  // 2. Calculate the "Safe Scale" factor to fit the original image inside
+  // This formula ensures we zoom in enough to hide the empty corners
+  // while maintaining the original aspect ratio.
+  // Formula derived from geometric intersection of rotated rectangles.
+  const aspect = imgW / imgH;
+  let scale = 1;
+
+  if (aspect >= 1) {
+      // Landscapeish
+      scale = imgH / (imgW * sin + imgH * cos);
+  } else {
+      // Portraitish
+      scale = imgW / (imgW * cos + imgH * sin);
+  }
+
+  // However, strict corner constraining often requires checking both dimensions:
+  // A robust approximation for UI sliders to ensure NO transparent corners:
+  const safeW = imgW * scale;
+  const safeH = imgH * scale;
+  
+  // 3. Convert that safe area into Inset Percentages relative to the Bounding Box
+  // The Bounding Box is what the "Crop" percentages are relative to.
+  
+  // Calculate how much empty space is on the X and Y axes total
+  const emptyX = bbW - safeW;
+  const emptyY = bbH - safeH;
+
+  // We want to center the crop, so split empty space by 2
+  const insetX = (emptyX / 2) / bbW * 100;
+  const insetY = (emptyY / 2) / bbH * 100;
+
+  return {
+    top: insetY,
+    bottom: insetY,
+    left: insetX,
+    right: insetX
+  };
+};
+
 // --- Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
@@ -34,7 +86,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
-// --- Thumbnail Helper ---
 const generateThumbnail = async (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -60,7 +111,6 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
-  // 0. --- ROUTING LOGIC ---
   const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
 
   useEffect(() => {
@@ -72,7 +122,6 @@ const App: React.FC = () => {
   if (currentPath === '/privacy') return <Privacy />;
   if (currentPath === '/terms') return <Terms />;
 
-  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -91,21 +140,17 @@ const App: React.FC = () => {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
-  // 2. --- STABLE APP LOGIC ---
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
-  // UI State
   const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
-  // Data State
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
-  // Progress State
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
   const [importProgress, setImportProgress] = useState<{ current: number, total: number } | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
@@ -130,6 +175,20 @@ const App: React.FC = () => {
 
   const handleUpdateParams = (newParams: EditParams) => {
     if (!activePhotoId) return;
+
+    // --- AUTO CROP LOGIC ---
+    // If Rotation changed, automatically update crop to hide blank corners
+    if (activePhoto && activeImage && newParams.crop.rotation !== activePhoto.params.crop.rotation) {
+        // Calculate safe insets
+        const safeCrop = calculateAutoCrop(activeImage.width, activeImage.height, newParams.crop.rotation || 0);
+        
+        // Apply safe insets
+        newParams.crop.top = safeCrop.top;
+        newParams.crop.bottom = safeCrop.bottom;
+        newParams.crop.left = safeCrop.left;
+        newParams.crop.right = safeCrop.right;
+    }
+
     setPhotos(prev => prev.map(p => p.id === activePhotoId ? { ...p, params: newParams, hiddenFromEdited: false } : p));
   };
 
@@ -173,6 +232,9 @@ const App: React.FC = () => {
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
     const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
 
+    // Safety check for tiny crops
+    if (sw <= 0 || sh <= 0) return null;
+
     canvas.width = sw;
     canvas.height = sh;
     const ctx = canvas.getContext('2d');
@@ -187,13 +249,11 @@ const App: React.FC = () => {
   };
 
   const processExportWithGate = async (photo: Photo) => {
-    // 1. MUST BE LOGGED IN TO EXPORT ANYTHING
     if (!user) {
       setModalType('login_prompt');
       return;
     }
 
-    // 2. CHECK QUOTA
     const check = canExport();
     if (!check.allowed) {
       if (check.reason === 'quota') setModalType('paywall');
@@ -218,13 +278,11 @@ const App: React.FC = () => {
   };
 
   const handleBatchExport = async () => {
-    // 1. MUST BE LOGGED IN
     if (!user) {
         setModalType('login_prompt');
         return;
     }
 
-    // 2. MUST BE PRO
     if (!profile?.is_pro) {
       setModalType('paywall');
       return;
@@ -312,7 +370,6 @@ const App: React.FC = () => {
         onAbout={() => setShowAbout(true)} 
       />
       
-      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
