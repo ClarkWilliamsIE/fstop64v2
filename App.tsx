@@ -9,6 +9,8 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
+// --- Components ---
+
 const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current, total }) => {
   const percentage = Math.round((current / total) * 100);
   return (
@@ -32,7 +34,8 @@ const LoadingOverlay: React.FC<{ current: number; total: number }> = ({ current,
   );
 };
 
-// --- Helper: Generate tiny thumbnail ---
+// --- Helpers ---
+
 const generateThumbnail = async (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -49,7 +52,7 @@ const generateThumbnail = async (file: File): Promise<string> => {
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
             canvas.toBlob(blob => {
                 if (blob) resolve(URL.createObjectURL(blob));
-                else resolve(e.target?.result as string); // Fallback
+                else resolve(e.target?.result as string);
             }, 'image/jpeg', 0.7);
         } else {
             resolve(e.target?.result as string);
@@ -70,6 +73,7 @@ const App: React.FC = () => {
   const [presets, setPresets] = useState<Preset[]>([]);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   
+  // Cache for loaded "heavy" images (only for the viewport/export)
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
@@ -78,14 +82,28 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Initial Demo Data
   useEffect(() => {
-    // Initial Demo Photos - We just reuse src as thumbnail for these since they are web URLs
     const demoPhotos = [
-      { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
-      { id: '2', name: 'Urban.jpg', src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
+      { 
+        id: '1', 
+        name: 'Coastline.jpg', 
+        src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', 
+        thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', 
+        params: { ...DEFAULT_PARAMS } 
+      },
+      { 
+        id: '2', 
+        name: 'Urban.jpg', 
+        src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', 
+        thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', 
+        params: { ...DEFAULT_PARAMS } 
+      },
     ];
     setPhotos(demoPhotos);
     setActivePhotoId('1');
+    
+    // Preload demo images
     demoPhotos.forEach(p => {
       const img = new Image();
       img.crossOrigin = "anonymous";
@@ -94,6 +112,7 @@ const App: React.FC = () => {
     });
   }, []);
 
+  // Lazy Load Image Logic for Viewport
   useEffect(() => {
     if (!activePhotoId) return;
     if (imageElements[activePhotoId]) return;
@@ -120,37 +139,64 @@ const App: React.FC = () => {
     setPhotos(prev => prev.map(p => p.id === activePhotoId ? { ...p, params: newParams, hiddenFromEdited: false } : p));
   };
 
-  const processExportWithGate = async (photo: Photo, img: HTMLImageElement) => {
+  // Helper: Get Full Res Image for Export (even if not currently loaded)
+  const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
+    if (imageElements[photo.id]) {
+      return imageElements[photo.id];
+    }
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      if (photo.src.startsWith('http')) img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = photo.src;
+    });
+  };
+
+  const processExportWithGate = async (photo: Photo) => {
     const check = canExport();
+    
     if (!check.allowed) {
       if (check.reason === 'auth') setModalType('login');
       else if (check.reason === 'quota') setModalType('paywall');
       return;
     }
 
-    const canvas = document.createElement('canvas');
-    const { crop } = photo.params;
-    const sx = (crop.left / 100) * img.width;
-    const sy = (crop.top / 100) * img.height;
-    const sw = img.width * (1 - (crop.left + crop.right) / 100);
-    const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
+    try {
+      setExportStatus({ current: 1, total: 1 });
+      
+      const img = await getFullResImage(photo);
 
-    canvas.width = sw;
-    canvas.height = sh;
-    const ctx = canvas.getContext('2d');
-    if (ctx) {
-      ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-      const imgData = ctx.getImageData(0, 0, sw, sh);
-      applyPipeline(imgData, photo.params, sw, sh);
-      ctx.putImageData(imgData, 0, 0);
-      const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
-      if (blob) {
-        const link = document.createElement('a');
-        link.download = `f64_${photo.name}`;
-        link.href = URL.createObjectURL(blob);
-        link.click();
-        await incrementExport();
+      const canvas = document.createElement('canvas');
+      const { crop } = photo.params;
+      const sx = (crop.left / 100) * img.width;
+      const sy = (crop.top / 100) * img.height;
+      const sw = img.width * (1 - (crop.left + crop.right) / 100);
+      const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
+
+      canvas.width = sw;
+      canvas.height = sh;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+        const imgData = ctx.getImageData(0, 0, sw, sh);
+        applyPipeline(imgData, photo.params, sw, sh);
+        ctx.putImageData(imgData, 0, 0);
+        
+        const blob = await new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
+        if (blob) {
+          const link = document.createElement('a');
+          link.download = `f64_${photo.name}`;
+          link.href = URL.createObjectURL(blob);
+          link.click();
+          await incrementExport();
+        }
       }
+    } catch (e) {
+      console.error("Export failed", e);
+      alert("Failed to process full-resolution image.");
+    } finally {
+      setExportStatus(null);
     }
   };
 
@@ -165,14 +211,8 @@ const App: React.FC = () => {
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
-      
-      // 1. Create heavy full-res URL (instant)
       const fullResUrl = URL.createObjectURL(file);
-      
-      // 2. Generate light-weight thumbnail (async)
-      // This ensures the filmstrip doesn't choke the browser
       const thumbUrl = await generateThumbnail(file);
-
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       
       newPhotos.push({ 
@@ -184,13 +224,10 @@ const App: React.FC = () => {
       });
 
       setImportProgress({ current: i + 1, total: fileList.length });
-      
-      // Yield to main thread to keep UI responsive
       if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
 
     setPhotos(prev => [...prev, ...newPhotos]);
-    
     if (!activePhotoId && newPhotos.length > 0) {
       setActivePhotoId(newPhotos[0].id);
     }
@@ -206,7 +243,7 @@ const App: React.FC = () => {
 
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
-        onExport={() => activePhoto && activeImage && processExportWithGate(activePhoto, activeImage)}
+        onExport={() => activePhoto && processExportWithGate(activePhoto)}
         onReset={() => handleUpdateParams(DEFAULT_PARAMS)}
         onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
         onPaste={() => clipboard && handleUpdateParams({ ...clipboard })}
@@ -216,6 +253,7 @@ const App: React.FC = () => {
         profile={profile}
         onSignIn={signIn}
         onSignOut={signOut}
+        onUpgrade={upgradeToPro}
       />
       
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
@@ -247,10 +285,7 @@ const App: React.FC = () => {
             activePhotoId={activePhotoId} 
             onSelect={setActivePhotoId} 
             onAdd={() => fileInputRef.current?.click()}
-            onExportSpecific={(photo) => {
-              const img = imageElements[photo.id];
-              if (img) processExportWithGate(photo, img);
-            }}
+            onExportSpecific={(photo) => processExportWithGate(photo)}
           />
         </div>
 
