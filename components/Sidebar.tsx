@@ -7,6 +7,7 @@ interface SidebarProps {
   presets: Preset[];
   onSavePreset: (name: string) => void;
   onApplyPreset: (preset: Preset) => void;
+  onDeletePreset?: (id: string) => void; // Optional delete handler
   editedPhotos: Photo[];
   onBatchExportEdited: () => void;
   onSelectPhoto: (id: string) => void;
@@ -15,7 +16,6 @@ interface SidebarProps {
   hasLastDismissed: boolean;
   isCropMode: boolean;
   onToggleCropMode: () => void;
-  activeImage?: HTMLImageElement | null;
 }
 
 const Accordion: React.FC<{ title: string; children: React.ReactNode; defaultOpen?: boolean }> = ({ title, children, defaultOpen = false }) => {
@@ -75,7 +75,6 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (draggingIdx === null || !svgRef.current) return;
-    
     const rect = svgRef.current.getBoundingClientRect();
     let x = (e.clientX - rect.left) / rect.width;
     let y = 1 - (e.clientY - rect.top) / rect.height;
@@ -137,7 +136,7 @@ const CurveEditor: React.FC<{ points: Point[]; onChange: (points: Point[]) => vo
 };
 
 const Sidebar: React.FC<SidebarProps> = ({ 
-  params, onChange, presets, onSavePreset, onApplyPreset, editedPhotos, onBatchExportEdited, onSelectPhoto, onDismissPhoto, onUndoDismiss, hasLastDismissed, isCropMode, onToggleCropMode
+  params, onChange, presets, onSavePreset, onApplyPreset, onDeletePreset, editedPhotos, onBatchExportEdited, onSelectPhoto, onDismissPhoto, onUndoDismiss, hasLastDismissed, isCropMode, onToggleCropMode
 }) => {
   const [activeTab, setActiveTab] = useState<'develop' | 'history'>('develop');
   const [hslMode, setHslMode] = useState<'hue' | 'saturation' | 'luminance'>('saturation');
@@ -148,7 +147,6 @@ const Sidebar: React.FC<SidebarProps> = ({
     onChange({ ...params, [key]: value });
   };
 
-  // Safe update for crop params
   const updateCrop = (key: string, value: number) => {
     onChange({ ...params, crop: { ...params.crop, [key]: value } });
   };
@@ -192,13 +190,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                
                {isCropMode && (
                 <div className="mt-4 space-y-4 bg-zinc-900/50 p-3 rounded border border-zinc-800">
-                  <Slider 
-                    label="Rotation" 
-                    min={-45} max={45} step={0.1} 
-                    value={params.crop.rotation || 0} 
-                    onChange={(v) => updateCrop('rotation', v)} 
-                  />
-                  
+                  <Slider label="Rotation" min={-45} max={45} step={0.1} value={params.crop.rotation || 0} onChange={(v) => updateCrop('rotation', v)} />
                   <div className="flex items-center justify-between pt-2 border-t border-zinc-700/50">
                     <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-semibold">Proportions</span>
                     <label className="flex items-center gap-2 cursor-pointer group">
@@ -217,6 +209,34 @@ const Sidebar: React.FC<SidebarProps> = ({
                 </div>
               )}
             </div>
+
+            {/* PRESETS */}
+            <Accordion title="Presets">
+              <div className="space-y-4">
+                <div className="flex gap-2">
+                  <input 
+                    type="text" 
+                    placeholder="New preset name..."
+                    className="bg-zinc-900 border border-zinc-800 rounded p-1.5 text-[11px] flex-1 outline-none focus:border-blue-500 text-zinc-300"
+                    value={newPresetName}
+                    onChange={e => setNewPresetName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && (onSavePreset(newPresetName), setNewPresetName(''))}
+                  />
+                  <button onClick={() => { onSavePreset(newPresetName); setNewPresetName(''); }} className="px-3 bg-zinc-800 hover:bg-zinc-700 rounded text-xs border border-zinc-700 transition-colors">+</button>
+                </div>
+                <div className="space-y-1">
+                  {presets.length === 0 && <p className="text-[10px] text-zinc-600 italic px-1">No custom presets.</p>}
+                  {presets.map(p => (
+                    <div key={p.id} className="group flex items-center justify-between hover:bg-zinc-800 rounded pr-2">
+                        <button onClick={() => onApplyPreset(p)} className="flex-1 text-left text-[11px] py-1.5 px-3 text-zinc-400 group-hover:text-white transition-all border border-transparent truncate">{p.name}</button>
+                        {onDeletePreset && (
+                            <button onClick={(e) => { e.stopPropagation(); onDeletePreset(p.id); }} className="opacity-0 group-hover:opacity-100 text-zinc-600 hover:text-red-500 transition-all p-1">×</button>
+                        )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </Accordion>
 
             <Accordion title="Basic" defaultOpen>
               <div className="space-y-5">
@@ -284,28 +304,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                 {(Object.keys(params.hsl) as HSLChannel[]).map(ch => (
                   <Slider key={ch} label={ch} min={-100} max={100} step={1} value={params.hsl[ch][hslMode]} onChange={v => updateHSL(ch, hslMode, v)} />
                 ))}
-              </div>
-            </Accordion>
-
-            <Accordion title="Presets">
-              <div className="space-y-4">
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    placeholder="New preset name..."
-                    className="bg-zinc-900 border border-zinc-800 rounded p-1.5 text-[11px] flex-1 outline-none focus:border-blue-500 text-zinc-300"
-                    value={newPresetName}
-                    onChange={e => setNewPresetName(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && (onSavePreset(newPresetName), setNewPresetName(''))}
-                  />
-                  <button onClick={() => { onSavePreset(newPresetName); setNewPresetName(''); }} className="px-3 bg-zinc-800 hover:bg-zinc-700 rounded text-xs border border-zinc-700 transition-colors">+</button>
-                </div>
-                <div className="space-y-1">
-                  {presets.length === 0 && <p className="text-[10px] text-zinc-600 italic px-1">No custom presets.</p>}
-                  {presets.map(p => (
-                    <button key={p.id} onClick={() => onApplyPreset(p)} className="w-full text-left text-[11px] py-1.5 px-3 hover:bg-zinc-800 rounded text-zinc-400 hover:text-white transition-all border border-transparent hover:border-zinc-700 truncate">{p.name}</button>
-                  ))}
-                </div>
               </div>
             </Accordion>
           </>
