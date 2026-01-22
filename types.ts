@@ -65,6 +65,7 @@ export interface UserProfile {
   email: string;
   is_pro: boolean;
   export_count: number;
+  stripe_customer_id?: string; // <--- NEW FIELD
 }
 
 export interface Preset {
