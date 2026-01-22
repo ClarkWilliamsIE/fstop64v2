@@ -37,12 +37,14 @@ export interface EditParams {
   crop: CropParams;
 }
 
+// --- UPDATED USER PROFILE ---
+// This now represents the "Hydrated" user state for the UI, 
+// combining Auth data + DB Profile + Calculated Export Logs
 export interface UserProfile {
-  id: string;
-  email: string;
-  is_pro: boolean;
-  export_count: number;
-  quota_reset_date: string;
+  id: string;          // from auth.users
+  email: string;       // from auth.users
+  is_pro: boolean;     // from public.profiles
+  export_count: number; // calculated from public.export_logs (current month)
 }
 
 export interface Preset {
@@ -55,7 +57,7 @@ export interface Photo {
   id: string;
   name: string;
   src: string;
-  thumbnailSrc?: string; // <--- NEW FIELD
+  thumbnailSrc?: string;
   params: EditParams;
   lastEdited?: number;
   hiddenFromEdited?: boolean;
