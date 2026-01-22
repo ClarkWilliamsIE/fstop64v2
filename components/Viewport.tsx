@@ -1,4 +1,3 @@
-
 import React, { useRef, useEffect, useCallback, useState } from 'react';
 import { EditParams, CropParams } from '../types';
 import { applyPipeline } from '../engine';
@@ -12,9 +11,40 @@ interface ViewportProps {
 
 const MAX_PREVIEW_DIMENSION = 1400;
 
+// Helper to get a canvas with the image rotated
+const getRotatedCanvas = (image: HTMLImageElement, rotation: number): HTMLCanvasElement => {
+  if (rotation === 0) {
+    // Quick pass if no rotation
+    const c = document.createElement('canvas');
+    c.width = image.width;
+    c.height = image.height;
+    c.getContext('2d')?.drawImage(image, 0, 0);
+    return c;
+  }
+
+  const rad = (rotation * Math.PI) / 180;
+  const cw = Math.abs(image.width * Math.cos(rad)) + Math.abs(image.height * Math.sin(rad));
+  const ch = Math.abs(image.width * Math.sin(rad)) + Math.abs(image.height * Math.cos(rad));
+
+  const c = document.createElement('canvas');
+  c.width = cw;
+  c.height = ch;
+  const ctx = c.getContext('2d');
+  if (!ctx) return c;
+
+  // Center and Rotate
+  ctx.translate(cw / 2, ch / 2);
+  ctx.rotate(rad);
+  ctx.drawImage(image, -image.width / 2, -image.height / 2);
+  
+  return c;
+};
+
 const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdateCrop }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  
+  // We store the *Rotated* source here
   const previewSourceCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const animationFrameRef = useRef<number>(null);
 
@@ -27,25 +57,32 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
     aspectRatio: number;
   } | null>(null);
 
+  // 1. Prepare Source (Rotate if needed)
   useEffect(() => {
     if (!image) return;
     
-    const scale = Math.min(1, MAX_PREVIEW_DIMENSION / Math.max(image.width, image.height));
-    const pw = Math.floor(image.width * scale);
-    const ph = Math.floor(image.height * scale);
+    // Create rotated full-res buffer
+    const fullRotated = getRotatedCanvas(image, params.crop.rotation || 0);
+
+    // Downscale for preview performance
+    const scale = Math.min(1, MAX_PREVIEW_DIMENSION / Math.max(fullRotated.width, fullRotated.height));
+    const pw = Math.floor(fullRotated.width * scale);
+    const ph = Math.floor(fullRotated.height * scale);
 
     const offscreen = document.createElement('canvas');
     offscreen.width = pw;
     offscreen.height = ph;
     const ctx = offscreen.getContext('2d', { willReadFrequently: true });
+    
     if (ctx) {
-      ctx.drawImage(image, 0, 0, pw, ph);
+      ctx.drawImage(fullRotated, 0, 0, pw, ph);
       previewSourceCanvasRef.current = offscreen;
     }
     
     render();
-  }, [image]);
+  }, [image, params.crop.rotation]); // Re-run only when rotation changes
 
+  // 2. Render Pipeline (Crop -> Edit)
   const render = useCallback(() => {
     const canvas = canvasRef.current;
     const source = previewSourceCanvasRef.current;
@@ -69,8 +106,10 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
 
     const imgData = sourceCtx.getImageData(renderSx, renderSy, renderSw, renderSh);
     
-    applyPipeline(imgData, params, renderSw, renderSh, isCropMode);
+    // Apply Colors
+    applyPipeline(imgData, params, renderSw, renderSh);
 
+    // Scaling for display
     const sidebarWidth = 320;
     const filmstripHeight = 128;
     const topBarHeight = 56;
@@ -83,7 +122,7 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
     canvas.style.height = `${renderSh * scale}px`;
 
     ctx.putImageData(imgData, 0, 0);
-  }, [params, image, isCropMode]);
+  }, [params, image, isCropMode]); // We don't need to depend on params.crop.rotation here because useEffect handles the source update
 
   useEffect(() => {
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
@@ -91,12 +130,11 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
     return () => { if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current); };
   }, [render]);
 
-  // --- Drag Handling Logic ---
+  // --- Drag Handling Logic (Unchanged, operates on percentages of the rotated view) ---
   const handleMouseDown = (e: React.MouseEvent, type: string) => {
     if (!isCropMode) return;
     e.preventDefault();
 
-    // Calculate current crop aspect ratio for locking
     const cropW = 100 - (params.crop.left + params.crop.right);
     const cropH = 100 - (params.crop.top + params.crop.bottom);
     const ratio = cropW / cropH;
@@ -128,14 +166,9 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
         newCrop.top = Math.max(0, Math.min(100 - (newCrop.bottom + 1), dragInfo.startCrop.top + dy));
         newCrop.bottom = Math.max(0, Math.min(100 - (newCrop.top + 1), dragInfo.startCrop.bottom - dy));
       } else {
-        // Handle aspect ratio constraint for corner handles
         if (isAspectLocked && (type.includes('-'))) {
-            // Adjust dy based on dx and the original ratio
-            if (Math.abs(dx) > Math.abs(dy)) {
-                dy = dx / aspectRatio;
-            } else {
-                dx = dy * aspectRatio;
-            }
+            if (Math.abs(dx) > Math.abs(dy)) dy = dx / aspectRatio;
+            else dx = dy * aspectRatio;
         }
 
         if (type.includes('left')) newCrop.left = Math.max(0, Math.min(100 - newCrop.right - 1, dragInfo.startCrop.left + dx));
@@ -162,8 +195,6 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
   return (
     <div ref={containerRef} className="relative shadow-[0_30px_60px_rgba(0,0,0,0.6)] border border-white/5 bg-[#0a0a0a] group">
       <canvas ref={canvasRef} className="block transition-all duration-300" style={{ filter: isCropMode ? 'brightness(0.5)' : 'none' }} />
-      
-      {/* Interactive Crop Overlay */}
       {isCropMode && (
         <div 
           className="absolute border border-white/40 shadow-[0_0_0_9999px_rgba(0,0,0,0.4)] cursor-move"
@@ -175,7 +206,6 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
           }}
           onMouseDown={(e) => handleMouseDown(e, 'move')}
         >
-          {/* Rule of Thirds Grid */}
           <div className="absolute inset-0 pointer-events-none grid grid-cols-3 grid-rows-3 opacity-20">
             <div className="border-r border-b border-white"></div>
             <div className="border-r border-b border-white"></div>
@@ -187,13 +217,10 @@ const Viewport: React.FC<ViewportProps> = ({ image, params, isCropMode, onUpdate
             <div className="border-r border-white"></div>
             <div></div>
           </div>
-
-          {/* Handles */}
           <div className="absolute -top-1 -left-1 w-3 h-3 bg-white border border-black cursor-nw-resize z-10" onMouseDown={(e) => handleMouseDown(e, 'top-left')} />
           <div className="absolute -top-1 -right-1 w-3 h-3 bg-white border border-black cursor-ne-resize z-10" onMouseDown={(e) => handleMouseDown(e, 'top-right')} />
           <div className="absolute -bottom-1 -left-1 w-3 h-3 bg-white border border-black cursor-sw-resize z-10" onMouseDown={(e) => handleMouseDown(e, 'bottom-left')} />
           <div className="absolute -bottom-1 -right-1 w-3 h-3 bg-white border border-black cursor-se-resize z-10" onMouseDown={(e) => handleMouseDown(e, 'bottom-right')} />
-          
           <div className="absolute top-1/2 -translate-y-1/2 -left-1 w-1.5 h-6 bg-white border border-black cursor-w-resize" onMouseDown={(e) => handleMouseDown(e, 'left')} />
           <div className="absolute top-1/2 -translate-y-1/2 -right-1 w-1.5 h-6 bg-white border border-black cursor-e-resize" onMouseDown={(e) => handleMouseDown(e, 'right')} />
           <div className="absolute left-1/2 -translate-x-1/2 -top-1 w-6 h-1.5 bg-white border border-black cursor-n-resize" onMouseDown={(e) => handleMouseDown(e, 'top')} />
