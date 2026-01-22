@@ -30,7 +30,6 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     
     // 2. If no large preview, try the smaller thumbnail
     if (!blob) {
-      console.warn("No large preview found, trying thumbnail...");
       blob = await exifr.thumbnail(file);
     }
 
@@ -40,7 +39,7 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     
     return null;
   } catch (e) {
-    console.error("Failed to parse RAW:", e);
+    console.warn("RAW extraction warning:", e);
     return null;
   }
 };
@@ -102,34 +101,36 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
 };
 
 // --- Thumbnail Helper ---
-const generateThumbnail = async (file: File, existingUrl?: string): Promise<string> => {
-  // If we already extracted a URL for the main view (from RAW), reuse it to make a small thumb
-  const sourceUrl = existingUrl || (isRawFile(file) ? await loadRawImage(file) : URL.createObjectURL(file));
-
-  // If RAW extraction completely failed, return a placeholder or empty
-  if (!sourceUrl) return '';
-
+const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
+    
+    // Safety timeout: if image takes too long, resolve with original URL so UI doesn't hang
+    const timer = setTimeout(() => resolve(existingUrl), 1500);
+
     img.onload = () => {
+      clearTimeout(timer);
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
-      // Force consistent thumbnail size
       const scale = Math.min(150 / img.width, 150 / img.height);
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : sourceUrl), 'image/jpeg', 0.6);
+          canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : existingUrl), 'image/jpeg', 0.6);
       } else {
-          resolve(sourceUrl);
+          resolve(existingUrl);
       }
     };
+    
     img.onerror = () => {
-        // If image fails to load, resolve with transparent pixel or error placeholder
-        resolve(''); 
+        clearTimeout(timer);
+        // If generating a fancy thumbnail fails, just use the main URL.
+        // It's heavy, but better than a blank space.
+        resolve(existingUrl); 
     };
-    img.src = sourceUrl;
+    
+    img.src = existingUrl;
   });
 };
 
@@ -352,17 +353,17 @@ const App: React.FC = () => {
           if (rawUrl) {
               fullResUrl = rawUrl;
           } else {
-              // Failed to extract raw, skip this file or alert user
-              console.warn(`Could not extract preview for ${file.name}`);
-              setImportProgress({ current: i + 1, total: fileList.length });
-              continue; 
+              // FAIL-SAFE: If RAW extraction fails, try loading file directly.
+              // This ensures the photo is ADDED to the filmstrip even if broken.
+              console.warn(`Could not extract preview for ${file.name}, using fallback.`);
+              fullResUrl = URL.createObjectURL(file);
           }
       } else {
           // Standard Image
           fullResUrl = URL.createObjectURL(file);
       }
       
-      // 2. Generate Thumb from the URL we just made (reusing it saves memory/time)
+      // 2. Generate Thumb (Safely)
       const thumbUrl = await generateThumbnail(file, fullResUrl);
       
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
@@ -375,10 +376,13 @@ const App: React.FC = () => {
         params: { ...DEFAULT_PARAMS } 
       });
       setImportProgress({ current: i + 1, total: fileList.length });
+      // Small pause to keep UI responsive
       if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
+
     setPhotos(prev => [...prev, ...newPhotos]);
     if (!activePhotoId && newPhotos.length > 0) setActivePhotoId(newPhotos[0].id);
+    
     await new Promise(r => setTimeout(r, 300));
     setImportProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -408,6 +412,7 @@ const App: React.FC = () => {
         onAbout={() => setShowAbout(true)} 
       />
       
+      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
