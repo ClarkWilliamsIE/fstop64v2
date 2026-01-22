@@ -1,6 +1,5 @@
-
 import React, { useState } from 'react';
-import { EditParams, HSLChannel, HSLParams, Preset, CropParams, Photo } from '../types';
+import { EditParams, HSLChannel, HSLParams, Preset, CropParams, Photo, ColorGradePair } from '../types';
 
 interface SidebarProps {
   params: EditParams;
@@ -43,10 +42,11 @@ const Slider: React.FC<{
   step: number;
   value: number;
   onChange: (val: number) => void;
-}> = ({ label, min, max, step, value, onChange }) => (
+  className?: string; // Optional coloring
+}> = ({ label, min, max, step, value, onChange, className }) => (
   <div className="group">
     <div className="flex justify-between items-center mb-1">
-      <label className="text-[11px] text-zinc-500 group-hover:text-zinc-300 transition-colors">{label}</label>
+      <label className={`text-[11px] font-medium transition-colors ${className || 'text-zinc-500 group-hover:text-zinc-300'}`}>{label}</label>
       <span className="text-[10px] text-zinc-500 font-mono">
         {value > 0 ? `+${value.toFixed(step >= 1 ? 0 : 2)}` : value.toFixed(step >= 1 ? 0 : 2)}
       </span>
@@ -71,6 +71,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [newPresetName, setNewPresetName] = useState('');
   const [isAspectLocked, setIsAspectLocked] = useState(false);
 
+  // Helper to deep update params
   const updateParam = (key: keyof EditParams, value: any) => {
     onChange({ ...params, [key]: value });
   };
@@ -81,9 +82,19 @@ const Sidebar: React.FC<SidebarProps> = ({
     updateParam('hsl', newHSL);
   };
 
+  // NEW: Helper for Color Grading
+  const updateColorGrade = (range: 'shadows' | 'midtones' | 'highlights', field: keyof ColorGradePair, value: number) => {
+    const newCG = { ...params.colorGrading };
+    newCG[range] = { ...newCG[range], [field]: value };
+    updateParam('colorGrading', newCG);
+  };
+  const updateColorGradeGlobal = (field: 'blending' | 'balance', value: number) => {
+    const newCG = { ...params.colorGrading, [field]: value };
+    updateParam('colorGrading', newCG);
+  };
+
   return (
     <div className="flex flex-col h-full select-none">
-      {/* Tab Switcher */}
       <div className="flex bg-[#1a1a1a] p-1.5 border-b border-zinc-800 shrink-0">
         <button 
           onClick={() => setActiveTab('develop')}
@@ -131,7 +142,6 @@ const Sidebar: React.FC<SidebarProps> = ({
                       checked={isAspectLocked} 
                       onChange={(e) => {
                         setIsAspectLocked(e.target.checked);
-                        // Communicate lock state to window/global for the Viewport to read
                         (window as any).__cropAspectLocked = e.target.checked;
                       }}
                     />
@@ -197,6 +207,46 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
             </Accordion>
 
+            {/* --- NEW: TONE CURVE SECTION --- */}
+            <Accordion title="Tone Curve">
+              <div className="space-y-4">
+                <p className="text-[10px] text-zinc-600 mb-2">Parametric Curve Control</p>
+                <Slider label="Highlights" min={-100} max={100} step={1} value={params.curveHighlights} onChange={(v) => updateParam('curveHighlights', v)} />
+                <Slider label="Lights" min={-100} max={100} step={1} value={params.curveLights} onChange={(v) => updateParam('curveLights', v)} />
+                <Slider label="Darks" min={-100} max={100} step={1} value={params.curveDarks} onChange={(v) => updateParam('curveDarks', v)} />
+                <Slider label="Shadows" min={-100} max={100} step={1} value={params.curveShadows} onChange={(v) => updateParam('curveShadows', v)} />
+              </div>
+            </Accordion>
+
+            {/* --- NEW: COLOR GRADING SECTION --- */}
+            <Accordion title="Color Grading">
+              <div className="space-y-6">
+                {/* Shadows */}
+                <div className="space-y-2">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase">Shadows</p>
+                  <Slider className="text-zinc-400" label="Hue" min={0} max={360} step={1} value={params.colorGrading.shadows.hue} onChange={(v) => updateColorGrade('shadows', 'hue', v)} />
+                  <Slider className="text-zinc-400" label="Sat" min={0} max={100} step={1} value={params.colorGrading.shadows.saturation} onChange={(v) => updateColorGrade('shadows', 'saturation', v)} />
+                </div>
+                {/* Midtones */}
+                <div className="space-y-2 pt-2 border-t border-zinc-800/50">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase">Midtones</p>
+                  <Slider className="text-zinc-400" label="Hue" min={0} max={360} step={1} value={params.colorGrading.midtones.hue} onChange={(v) => updateColorGrade('midtones', 'hue', v)} />
+                  <Slider className="text-zinc-400" label="Sat" min={0} max={100} step={1} value={params.colorGrading.midtones.saturation} onChange={(v) => updateColorGrade('midtones', 'saturation', v)} />
+                </div>
+                {/* Highlights */}
+                <div className="space-y-2 pt-2 border-t border-zinc-800/50">
+                  <p className="text-[10px] font-bold text-zinc-500 uppercase">Highlights</p>
+                  <Slider className="text-zinc-400" label="Hue" min={0} max={360} step={1} value={params.colorGrading.highlights.hue} onChange={(v) => updateColorGrade('highlights', 'hue', v)} />
+                  <Slider className="text-zinc-400" label="Sat" min={0} max={100} step={1} value={params.colorGrading.highlights.saturation} onChange={(v) => updateColorGrade('highlights', 'saturation', v)} />
+                </div>
+                {/* Global Controls */}
+                <div className="space-y-2 pt-4 border-t border-zinc-800">
+                  <Slider label="Blending" min={0} max={100} step={1} value={params.colorGrading.blending} onChange={(v) => updateColorGradeGlobal('blending', v)} />
+                  <Slider label="Balance" min={-100} max={100} step={1} value={params.colorGrading.balance} onChange={(v) => updateColorGradeGlobal('balance', v)} />
+                </div>
+              </div>
+            </Accordion>
+
             <Accordion title="Color Mixer">
               <div className="flex bg-zinc-900 rounded p-1 mb-4">
                 {(['hue', 'saturation', 'luminance'] as const).map(m => (
@@ -211,6 +261,7 @@ const Sidebar: React.FC<SidebarProps> = ({
             </Accordion>
           </>
         ) : (
+           /* ... HISTORY TAB (Unchanged) ... */
           <div className="flex flex-col h-full">
             <div className="p-4 border-b border-zinc-800 shrink-0">
               <div className="flex items-center justify-between mb-2">
