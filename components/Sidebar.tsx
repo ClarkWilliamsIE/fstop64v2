@@ -358,6 +358,16 @@ const Sidebar: React.FC<SidebarProps> = ({
           </div>
         )}
       </div>
+
+      <div className="p-3 border-t border-zinc-800 bg-[#1a1a1a] text-center">
+        <div className="flex justify-center gap-3 text-[9px] text-zinc-600 uppercase tracking-widest font-bold">
+          <a href="/privacy" className="hover:text-zinc-400 transition-colors">Privacy</a>
+          <span>•</span>
+          <a href="/terms" className="hover:text-zinc-400 transition-colors">Terms</a>
+        </div>
+        <p className="text-[8px] text-zinc-700 mt-1">© 2024 F/STOP 64</p>
+      </div>
+
     </div>
   );
 };
