@@ -54,6 +54,17 @@ const rawDataToUrl = (data: any): string => {
     return URL.createObjectURL(blob);
 };
 
+// --- HELPER: CHECK IMAGE DIMENSIONS ---
+// Returns true if the blob url points to an image larger than minWidth
+const isImageLargeEnough = (url: string, minWidth: number = 600): Promise<boolean> => {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => resolve(img.width >= minWidth);
+        img.onerror = () => resolve(false);
+        img.src = url;
+    });
+};
+
 // --- HELPER: RAW DETECTION ---
 const isRawFile = (file: File) => {
   const ext = file.name.split('.').pop()?.toLowerCase();
@@ -115,33 +126,40 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     return null;
   }
 
-  // --- ATTEMPT 1: HIGH QUALITY PREVIEW ---
+  // --- ATTEMPT 1: HIGH QUALITY PREVIEW (EXIFR) ---
   try {
     console.log(`Trying Preview for ${file.name}...`);
     const previewData = await exifr.preview(file);
     if (previewData) {
-        console.log("✅ Preview Found");
-        return rawDataToUrl(previewData);
+        const url = rawDataToUrl(previewData);
+        // Only accept if it's decent quality (e.g. > 600px wide)
+        if (await isImageLargeEnough(url, 600)) {
+            console.log("✅ High-Res Preview Found via exifr");
+            return url;
+        }
+        console.log("⚠️ Preview found but too small, ignoring...");
     }
   } catch(e) { console.debug("Preview extraction skipped."); }
 
-  // --- ATTEMPT 2: THUMBNAIL (Fallback for CR2/DNG) ---
+  // --- ATTEMPT 2: HEAVY DECODE (UTIF) ---
+  // We prefer this over a tiny thumbnail because we want QUALITY.
+  console.warn(`No large preview in ${file.name}. Trying UTIF Heavy Decode...`);
+  const decodedUrl = await decodeWithUTIF(file);
+  if (decodedUrl) {
+      console.log(`✅ UTIF Success (High Quality)`);
+      return decodedUrl;
+  }
+
+  // --- ATTEMPT 3: THUMBNAIL (LAST RESORT) ---
+  // If UTIF failed (or file type unsupported), we accept the tiny thumbnail rather than nothing.
   try {
-    console.log(`Preview failed. Trying Thumbnail for ${file.name}...`);
+    console.log(`UTIF failed. Falling back to thumbnail for ${file.name}...`);
     const thumbData = await exifr.thumbnail(file);
     if (thumbData) {
-        console.log("✅ Thumbnail Found");
+        console.log("⚠️ Low-Res Thumbnail used (Last Resort)");
         return rawDataToUrl(thumbData);
     }
   } catch(e) { console.debug("Thumbnail extraction skipped."); }
-
-  // --- ATTEMPT 3: HEAVY DECODE (UTIF) ---
-  console.warn(`No embedded JPEG in ${file.name}. Switching to Heavy Decoder (UTIF)...`);
-  const decodedUrl = await decodeWithUTIF(file);
-  if (decodedUrl) {
-      console.log(`✅ UTIF Success`);
-      return decodedUrl;
-  }
 
   console.error(`❌ All methods failed for ${file.name}`);
   return null;
