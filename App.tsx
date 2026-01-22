@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
-import JSZip from 'jszip'; 
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -9,7 +8,6 @@ import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
-// Import the new modal
 import { LoginModal, PaywallModal, LoginPromptModal } from './components/AuthModals';
 import AboutModal from './components/AboutModal';
 import { isMockMode } from './lib/supabase';
@@ -97,7 +95,7 @@ const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
-  // UI State - Added 'login_prompt' type
+  // UI State
   const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
@@ -115,7 +113,6 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Lazy Load Image Elements
   useEffect(() => {
     if (!activePhotoId) return;
     if (imageElements[activePhotoId]) return;
@@ -190,12 +187,13 @@ const App: React.FC = () => {
   };
 
   const processExportWithGate = async (photo: Photo) => {
-    // --- CHANGED LOGIC HERE ---
+    // 1. MUST BE LOGGED IN TO EXPORT ANYTHING
     if (!user) {
-      setModalType('login_prompt'); // Show simple login prompt
+      setModalType('login_prompt');
       return;
     }
 
+    // 2. CHECK QUOTA
     const check = canExport();
     if (!check.allowed) {
       if (check.reason === 'quota') setModalType('paywall');
@@ -219,17 +217,14 @@ const App: React.FC = () => {
     }
   };
 
-// --- UPDATED BATCH EXPORT ---
   const handleBatchExport = async () => {
-    // 1. CHECK LOGIN FIRST
-    // If we don't check this first, the code sees you have no profile
-    // and assumes you need to "Upgrade to Pro" instead of just "Sign In".
+    // 1. MUST BE LOGGED IN
     if (!user) {
         setModalType('login_prompt');
         return;
     }
 
-    // 2. CHECK PRO STATUS SECOND
+    // 2. MUST BE PRO
     if (!profile?.is_pro) {
       setModalType('paywall');
       return;
@@ -237,7 +232,6 @@ const App: React.FC = () => {
 
     if (editedPhotos.length === 0) return;
 
-    // 3. START EXPORT
     setBatchProgress({ current: 0, total: editedPhotos.length });
 
     try {
@@ -253,8 +247,6 @@ const App: React.FC = () => {
         }
 
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
-        
-        // Pause to prevent browser throttling
         await new Promise(r => setTimeout(r, 800)); 
       }
 
