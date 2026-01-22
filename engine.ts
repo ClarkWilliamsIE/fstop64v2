@@ -1,6 +1,6 @@
-import { EditParams, HSLChannel } from './types';
+import { EditParams, HSLChannel, Point } from './types';
 
-// Fast HSL conversion helpers
+// ... (Keep rgbToHsl and hslToRgb helpers) ...
 export const rgbToHsl = (r: number, g: number, b: number): [number, number, number] => {
   r /= 255; g /= 255; b /= 255;
   const max = Math.max(r, g, b), min = Math.min(r, g, b);
@@ -40,71 +40,94 @@ export const hslToRgb = (h: number, s: number, l: number): [number, number, numb
   return [r * 255, g * 255, b * 255];
 };
 
-// --- NEW: Color Grading Helper ---
-const applyColorGrade = (r: number, g: number, b: number, hue: number, sat: number, weight: number): [number, number, number] => {
-  if (sat === 0 || weight <= 0.001) return [r, g, b];
-  
-  // Convert current pixel to luminance
-  const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  
-  // Create a target color with that luminance
-  // We use a simplified overlay-like blend here for performance
-  let [h, s, l] = rgbToHsl(r, g, b);
-  
-  // Shift hue towards target
-  const targetHue = hue / 360;
-  
-  // Blend logic: 
-  // We want to tint the color without changing its luminance too much
-  const tintStrength = (sat / 100) * weight;
-  
-  // Simple RGB tinting approach for speed (Lightroom-ish)
-  // Convert target hue/sat to RGB
-  const [tr, tg, tb] = hslToRgb(targetHue, 1, 0.5); // Target is pure color at 50% light
-  
-  // Overlay blend
-  r = r * (1 - tintStrength) + (tr * 255) * tintStrength * (lum / 128);
-  g = g * (1 - tintStrength) + (tg * 255) * tintStrength * (lum / 128);
-  b = b * (1 - tintStrength) + (tb * 255) * tintStrength * (lum / 128);
+// ... (Keep applyColorGrade helper if you have it from previous step, otherwise remove this comment) ...
 
-  return [r, g, b];
+// --- NEW: Monotone Cubic Spline Interpolation for smooth curves ---
+const createSplineInterpolator = (points: Point[]) => {
+  // Sort points by x
+  points.sort((a, b) => a.x - b.x);
+
+  const n = points.length;
+  if (n === 0) return (x: number) => 0;
+  if (n === 1) return (x: number) => points[0].y;
+
+  // Calculate slopes (m)
+  const m = new Array(n).fill(0);
+  const d = new Array(n - 1).fill(0);
+  
+  for (let i = 0; i < n - 1; i++) {
+    const dx = points[i+1].x - points[i].x;
+    const dy = points[i+1].y - points[i].y;
+    d[i] = dy / dx;
+  }
+
+  m[0] = d[0];
+  m[n-1] = d[n-2];
+
+  for (let i = 1; i < n - 1; i++) {
+    if (d[i-1] * d[i] <= 0) m[i] = 0;
+    else {
+      const w1 = points[i+1].x - points[i].x; // h_i
+      const w2 = points[i].x - points[i-1].x; // h_{i-1}
+      m[i] = (w1 + w2) / ((w1 / d[i-1]) + (w2 / d[i]));
+    }
+  }
+
+  // Return interpolation function
+  return (x: number) => {
+    // Find segment
+    let i = 0;
+    if (x >= points[n-1].x) return points[n-1].y;
+    if (x <= points[0].x) return points[0].y;
+    
+    // Binary search could be faster, but linear is fine for small N
+    while (points[i+1].x < x) i++;
+    
+    const h = points[i+1].x - points[i].x;
+    const t = (x - points[i].x) / h;
+    const t2 = t * t;
+    const t3 = t2 * t;
+    
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    
+    const y = h00 * points[i].y + h10 * h * m[i] + h01 * points[i+1].y + h11 * h * m[i+1];
+    return Math.max(0, Math.min(1, y));
+  };
 };
 
-export const applyPipeline = (imgData: ImageData, params: EditParams, width: number, height: number, forceFull: boolean = false) => {
+// Precompute 256-entry Look Up Table (LUT) for the curve
+const generateCurveLUT = (points: Point[]) => {
+  const lut = new Uint8Array(256);
+  const interpolate = createSplineInterpolator(points);
+  for (let i = 0; i < 256; i++) {
+    lut[i] = Math.round(interpolate(i / 255) * 255);
+  }
+  return lut;
+};
+
+export const applyPipeline = (imgData: ImageData, params: EditParams, width: number, height: number) => {
   const data = imgData.data;
   const length = data.length;
 
+  // ... (Standard params calculations) ...
   const exposureMul = Math.pow(2, params.exposure);
   const contrastFactor = (259 * (params.contrast + 255)) / (255 * (259 - params.contrast));
   const vibranceAmt = params.vibrance / 100;
   
-  let profileSat = 1.0;
-  if (params.profile === 'vivid') profileSat = 1.25;
-  if (params.profile === 'portrait') profileSat = 0.95;
-  if (params.profile === 'landscape') profileSat = 1.1;
+  // Generate LUT for Point Curve
+  const hasPointCurve = params.curvePoints.length > 2 || params.curvePoints[0].y !== 0 || params.curvePoints[1].y !== 1;
+  let curveLUT: Uint8Array | null = null;
+  if (hasPointCurve) {
+    curveLUT = generateCurveLUT(params.curvePoints);
+  }
 
+  // Center/Dist for Vignette
   const centerX = width / 2;
   const centerY = height / 2;
   const maxDist = Math.sqrt(centerX * centerX + centerY * centerY);
-
-  // Pre-calculate Color Grading RGBs to avoid doing hslToRgb per pixel
-  // (Optimization)
-  const cg = params.colorGrading;
-  const hasCG = cg.shadows.saturation > 0 || cg.midtones.saturation > 0 || cg.highlights.saturation > 0;
-  
-  let sR = 0, sG = 0, sB = 0;
-  let mR = 0, mG = 0, mB = 0;
-  let hR = 0, hG = 0, hB = 0;
-
-  if (hasCG) {
-    [sR, sG, sB] = hslToRgb(cg.shadows.hue / 360, 1, 0.5);
-    [mR, mG, mB] = hslToRgb(cg.midtones.hue / 360, 1, 0.5);
-    [hR, hG, hB] = hslToRgb(cg.highlights.hue / 360, 1, 0.5);
-    // Scale up to 255 once
-    sR*=255; sG*=255; sB*=255;
-    mR*=255; mG*=255; mB*=255;
-    hR*=255; hG*=255; hB*=255;
-  }
 
   for (let i = 0; i < length; i += 4) {
     let r = data[i];
@@ -112,9 +135,9 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
     let b = data[i + 2];
 
     // 1. Exposure & Profiles
-    r *= (exposureMul * profileSat);
-    g *= (exposureMul * profileSat);
-    b *= (exposureMul * profileSat);
+    r *= exposureMul;
+    g *= exposureMul;
+    b *= exposureMul;
 
     // 2. White Balance
     r += params.temperature;
@@ -126,7 +149,6 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
     const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
     const normLum = Math.max(0, Math.min(1, lum / 255));
     
-    // ... (Existing Tone logic) ...
     const shadowW = Math.max(0, 1 - Math.pow(normLum, 0.5) * 2);
     const highlightW = Math.max(0, Math.pow(normLum, 2));
     const whiteW = Math.max(0, Math.pow(normLum, 4));
@@ -140,7 +162,7 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
     
     r += toneDelta; g += toneDelta; b += toneDelta;
 
-    // 4. Clarity / Dehaze (Existing)
+    // 4. Clarity / Dehaze
     if (params.dehaze !== 0) {
       const dh = params.dehaze / 100;
       r = (r - 128 * dh) / (1 - Math.abs(dh) * 0.4) + 128 * dh;
@@ -157,8 +179,7 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
       b = (b - 128) * clFactor + 128;
     }
 
-    // 5. Tone Curve (PARAMETRIC)
-    // We already had this logic, it was just hidden!
+    // 5. Parametric Curve (Legacy/Simple)
     const cShadowW = Math.max(0, 1 - normLum * 4);
     const cDarksW = Math.max(0, 1 - Math.abs(normLum - 0.25) * 4);
     const cLightsW = Math.max(0, 1 - Math.abs(normLum - 0.75) * 4);
@@ -172,52 +193,20 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
     
     r += curveDelta; g += curveDelta; b += curveDelta;
 
-    // 6. Contrast (Existing)
+    // 6. Contrast
     r = contrastFactor * (r - 128) + 128;
     g = contrastFactor * (g - 128) + 128;
     b = contrastFactor * (b - 128) + 128;
 
-    // --- NEW: COLOR GRADING ---
-    if (hasCG) {
-      // Recalculate lum after contrast/tone changes
-      const finalLum = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      
-      // Calculate Masks based on Balance
-      // Balance shifts the midpoint (-1 to +1)
-      const balance = cg.balance / 100; 
-      
-      // Smooth falloff masks
-      const sMask = Math.max(0, (1 - finalLum) - balance); // Shadows
-      const hMask = Math.max(0, finalLum + balance);      // Highlights
-      
-      // Midtones are whatever is left
-      // We square/smoothstep to make it look like separate wheels
-      const sWeight = Math.min(1, Math.pow(sMask, 2) * 2);
-      const hWeight = Math.min(1, Math.pow(hMask, 2) * 2);
-      const mWeight = Math.max(0, 1 - sWeight - hWeight);
-
-      // Apply Tints
-      if (cg.shadows.saturation > 0) {
-        const str = (cg.shadows.saturation / 100) * sWeight;
-        r += (sR - r) * str * 0.3; // 0.3 factor to keep it subtle/photographic
-        g += (sG - g) * str * 0.3;
-        b += (sB - b) * str * 0.3;
-      }
-      if (cg.highlights.saturation > 0) {
-        const str = (cg.highlights.saturation / 100) * hWeight;
-        r += (hR - r) * str * 0.3;
-        g += (hG - g) * str * 0.3;
-        b += (hB - b) * str * 0.3;
-      }
-      if (cg.midtones.saturation > 0) {
-        const str = (cg.midtones.saturation / 100) * mWeight;
-        r += (mR - r) * str * 0.3;
-        g += (mG - g) * str * 0.3;
-        b += (mB - b) * str * 0.3;
-      }
+    // 7. NEW: Point Curve (Applied after contrast, before color)
+    if (curveLUT) {
+      // Clamp to 0-255 before lookup
+      r = curveLUT[Math.max(0, Math.min(255, Math.round(r)))];
+      g = curveLUT[Math.max(0, Math.min(255, Math.round(g)))];
+      b = curveLUT[Math.max(0, Math.min(255, Math.round(b)))];
     }
 
-    // 7. HSL / Color Mixer (Existing)
+    // 8. Color Logic (HSL)
     let [h, s, l] = rgbToHsl(Math.max(0, Math.min(255, r)), Math.max(0, Math.min(255, g)), Math.max(0, Math.min(255, b)));
     
     if (vibranceAmt !== 0) {
@@ -244,7 +233,7 @@ export const applyPipeline = (imgData: ImageData, params: EditParams, width: num
 
     [r, g, b] = hslToRgb(h, s, l);
 
-    // 8. Vignette (Existing)
+    // 9. Vignette
     if (params.vignette > 0) {
       const x = (i / 4) % width;
       const y = Math.floor((i / 4) / width);
