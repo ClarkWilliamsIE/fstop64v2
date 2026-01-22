@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import JSZip from 'jszip'; // <--- NEW IMPORT
-import { saveAs } from 'file-saver'; // <--- NEW IMPORT
+import JSZip from 'jszip';
+import { saveAs } from 'file-saver';
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -11,7 +11,11 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 
-// --- Loading Overlay (Reused for Batch Export) ---
+// --- IMPORT YOUR BETA SANDBOX ---
+// Ensure you have created this file!
+import BetaApp from './BetaApp';
+
+// --- Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
   return (
@@ -22,14 +26,9 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <span>{percentage}%</span>
         </div>
         <div className="h-1 bg-zinc-800 rounded-full overflow-hidden">
-          <div 
-            className="h-full bg-blue-500 transition-all duration-100 ease-out" 
-            style={{ width: `${percentage}%` }}
-          />
+          <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
-        <p className="text-center text-[10px] text-zinc-600 font-mono">
-          Item {current} of {total}
-        </p>
+        <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
       </div>
     </div>
   );
@@ -49,10 +48,7 @@ const generateThumbnail = async (file: File): Promise<string> => {
         canvas.height = img.height * scale;
         if (ctx) {
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-            canvas.toBlob(blob => {
-                if (blob) resolve(URL.createObjectURL(blob));
-                else resolve(e.target?.result as string);
-            }, 'image/jpeg', 0.7);
+            canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : e.target?.result as string), 'image/jpeg', 0.7);
         } else {
             resolve(e.target?.result as string);
         }
@@ -64,6 +60,31 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
+  // 1. --- BETA MODE LOGIC ---
+  // This reads your preference from the browser's local storage
+  const [isBeta, setIsBeta] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.getItem('fstop64_beta_mode') === 'true';
+    }
+    return false;
+  });
+
+  const toggleBeta = () => {
+    const newState = !isBeta;
+    setIsBeta(newState);
+    localStorage.setItem('fstop64_beta_mode', String(newState));
+    // Reload to ensure a completely fresh start for the new mode
+    window.location.reload();
+  };
+
+  // 2. --- TRAFFIC CONTROL ---
+  // If Beta is active, we immediately render the Beta App and stop here.
+  if (isBeta) {
+    return <BetaApp onToggleBeta={toggleBeta} />;
+  }
+
+  // 3. --- STABLE APP LOGIC ---
+  // If Beta is OFF, we render the standard, stable application below.
   const { user, profile, signIn, signOut, upgradeToPro, canExport, incrementExport } = useAuthSubscription();
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
 
@@ -73,7 +94,6 @@ const App: React.FC = () => {
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
-  // Status States
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
   const [importProgress, setImportProgress] = useState<{ current: number, total: number } | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
@@ -81,7 +101,6 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Initial Demo Data
   useEffect(() => {
     const demoPhotos = [
       { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
@@ -97,7 +116,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  // Lazy Load Logic
   useEffect(() => {
     if (!activePhotoId) return;
     if (imageElements[activePhotoId]) return;
@@ -119,7 +137,6 @@ const App: React.FC = () => {
     setPhotos(prev => prev.map(p => p.id === activePhotoId ? { ...p, params: newParams, hiddenFromEdited: false } : p));
   };
 
-  // Helper: Get Full Res Image (on demand)
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
@@ -131,7 +148,27 @@ const App: React.FC = () => {
     });
   };
 
-  // --- SINGLE EXPORT ---
+  const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
+    const canvas = document.createElement('canvas');
+    const { crop } = params;
+    const sx = (crop.left / 100) * img.width;
+    const sy = (crop.top / 100) * img.height;
+    const sw = img.width * (1 - (crop.left + crop.right) / 100);
+    const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
+
+    canvas.width = sw;
+    canvas.height = sh;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
+    const imgData = ctx.getImageData(0, 0, sw, sh);
+    applyPipeline(imgData, params, sw, sh);
+    ctx.putImageData(imgData, 0, 0);
+
+    return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
+  };
+
   const processExportWithGate = async (photo: Photo) => {
     const check = canExport();
     if (!check.allowed) {
@@ -157,9 +194,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- BATCH EXPORT (ZIP) ---
   const handleBatchExport = async () => {
-    // 1. Check Pro Status
     if (!profile?.is_pro) {
       setModalType('paywall');
       return;
@@ -173,21 +208,14 @@ const App: React.FC = () => {
     try {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
-        
-        // Load & Process
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
-        
-        if (blob) {
-          zip.file(`f64_${photo.name}`, blob);
-        }
+        if (blob) zip.file(`f64_${photo.name}`, blob);
 
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
-        // Yield to UI
         if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
       }
 
-      // Generate Zip
       const content = await zip.generateAsync({ type: "blob" });
       saveAs(content, `fstop64_batch_${new Date().toISOString().slice(0,10)}.zip`);
 
@@ -197,28 +225,6 @@ const App: React.FC = () => {
     } finally {
       setBatchProgress(null);
     }
-  };
-
-  // Helper: Core Pipeline Processing
-  const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
-    const canvas = document.createElement('canvas');
-    const { crop } = params;
-    const sx = (crop.left / 100) * img.width;
-    const sy = (crop.top / 100) * img.height;
-    const sw = img.width * (1 - (crop.left + crop.right) / 100);
-    const sh = img.height * (1 - (crop.top + crop.bottom) / 100);
-
-    canvas.width = sw;
-    canvas.height = sh;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-    const imgData = ctx.getImageData(0, 0, sw, sh);
-    applyPipeline(imgData, params, sw, sh);
-    ctx.putImageData(imgData, 0, 0);
-
-    return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -253,7 +259,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
-      {/* Overlays */}
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
       {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Zipping Batch" />}
 
@@ -270,6 +275,10 @@ const App: React.FC = () => {
         onSignIn={signIn}
         onSignOut={signOut}
         onUpgrade={upgradeToPro}
+        
+        // --- PASSING TOGGLE PROPS TO STABLE TOPBAR ---
+        isBeta={false} 
+        onToggleBeta={toggleBeta} 
       />
       
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
@@ -313,10 +322,7 @@ const App: React.FC = () => {
             onSavePreset={(name) => activePhoto && setPresets(prev => [...prev, { id: Date.now().toString(), name: name || `New Preset`, params: { ...activePhoto.params } }])}
             onApplyPreset={(p) => handleUpdateParams({ ...p.params })}
             editedPhotos={editedPhotos}
-            
-            // --- UPDATED: CONNECTING THE REAL BATCH FUNCTION ---
             onBatchExportEdited={handleBatchExport} 
-            
             onSelectPhoto={setActivePhotoId}
             onDismissPhoto={(id) => setPhotos(prev => prev.map(p => p.id === id ? { ...p, hiddenFromEdited: true } : p))}
             onUndoDismiss={() => {}}
