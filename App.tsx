@@ -57,16 +57,24 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
         const arrayBuffer = await file.arrayBuffer();
         const ifds = UTIF.decode(arrayBuffer);
         
-        let page = ifds[0];
         // Scan for the largest valid image
+        let page = ifds[0];
         let maxPixels = 0;
         for (let i = 0; i < ifds.length; i++) {
              const p = ifds[i];
-             const pixels = p.width * p.height;
-             if (pixels > maxPixels && pixels > 0) {
-                 maxPixels = pixels;
-                 page = p;
+             // Ensure it has dimensions and isn't some weird metadata block
+             if (p.width && p.height) {
+                 const pixels = p.width * p.height;
+                 if (pixels > maxPixels) {
+                     maxPixels = pixels;
+                     page = p;
+                 }
              }
+        }
+
+        if (!page || !page.width || !page.height) {
+             console.warn("UTIF: No valid image data found in IFDs");
+             return null;
         }
 
         UTIF.decodeImage(arrayBuffer, page);
@@ -82,7 +90,8 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
         imgData.data.set(rgba);
         ctx.putImageData(imgData, 0, 0);
 
-        return canvas.toDataURL('image/jpeg', 0.8);
+        // Use higher quality JPEG encoding for the main view
+        return canvas.toDataURL('image/jpeg', 0.95);
 
     } catch (e) {
         console.warn("UTIF decode failed:", e);
@@ -104,22 +113,24 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     let rawData: any = null;
     
     try {
-        // Try getting the embedded JPEG buffer
-        rawData = await exifr.thumbnail(file);
+        // --- QUALITY FIX IS HERE ---
+        // 1. Try getting the largest preview FIRST
+        console.log(`Attempting large preview extraction for ${file.name}...`);
+        rawData = await exifr.preview(file);
+        
+        // 2. If no large preview, fall back to the smaller thumbnail
         if (!rawData) {
-            console.log("No thumbnail found, scanning preview...");
-            rawData = await exifr.preview(file);
+            console.log("No large preview found, falling back to thumbnail...");
+            rawData = await exifr.thumbnail(file);
         }
     } catch(e) { 
         console.debug('Exifr extraction skipped:', e); 
     }
 
     if (rawData) {
-      console.log(`Exifr Success: ${file.name}`);
+      console.log(`Exifr Success: ${file.name}, Size: ${rawData.byteLength || rawData.size}`);
       
-      // *** FIX IS HERE ***
-      // exifr returns an ArrayBuffer (raw bytes). 
-      // URL.createObjectURL needs a Blob. We must wrap it.
+      // Wrap raw data in a Blob so URL.createObjectURL accepts it
       let blob: Blob;
       if (rawData instanceof Blob) {
           blob = rawData;
@@ -179,7 +190,7 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
-        {label?.includes('Importing') && <p className="text-center text-[9px] text-zinc-700">Analyzing RAW data...</p>}
+        {label?.includes('Importing') && <p className="text-center text-[9px] text-zinc-700">Analyzing RAW data (High Res)...</p>}
       </div>
     </div>
   );
@@ -189,16 +200,19 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
 const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
-    const timer = setTimeout(() => resolve(existingUrl), 1500); // 1.5s timeout
+    // Increased timeout slightly for larger images
+    const timer = setTimeout(() => resolve(existingUrl), 2000); 
     img.onload = () => {
       clearTimeout(timer);
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
+      // Keep thumbnails small for filmstrip performance
       const scale = Math.min(150 / img.width, 150 / img.height);
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          // Use lower quality for thumbnails to save memory
           canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : existingUrl), 'image/jpeg', 0.6);
       } else { resolve(existingUrl); }
     };
@@ -353,6 +367,7 @@ const App: React.FC = () => {
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
 
+    // Use high quality for export
     return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
   };
 
@@ -447,7 +462,9 @@ const App: React.FC = () => {
           const rawUrl = await loadRawImage(file);
           if (rawUrl) {
               fullResUrl = rawUrl;
-              thumbUrl = rawUrl; 
+              // We have the high-res URL, but we need to generate a small thumb from it
+              // otherwise the filmstrip will lag.
+              thumbUrl = await generateThumbnail(file, fullResUrl);
           } else {
               // Final Failure State
               console.warn(`CRITICAL: All decoders failed for ${file.name}`);
