@@ -1,5 +1,5 @@
 
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.39.7';
+import { createClient } from '@supabase/supabase-js';
 
 // These should be set in your GitHub Actions Secrets or .env file
 const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL || '';
