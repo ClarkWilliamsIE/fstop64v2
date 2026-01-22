@@ -1,6 +1,9 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
-import exifr from 'exifr';
+
+// @ts-ignore - We must import the FULL version to get image extraction support
+import exifr from 'exifr/dist/full.esm.mjs';
+
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -17,7 +20,6 @@ import Privacy from './Privacy';
 import Terms from './Terms';
 
 // --- HELPER: ERROR IMAGE GENERATOR ---
-// Creates a placeholder image so the UI doesn't look broken if RAW fails
 const createErrorImage = (text: string) => {
   const canvas = document.createElement('canvas');
   canvas.width = 300;
@@ -50,29 +52,19 @@ const isRawFile = (file: File) => {
 
 // --- HELPER: ROBUST RAW LOADER ---
 const loadRawImage = async (file: File): Promise<string | null> => {
-  const isDNG = file.name.toLowerCase().endsWith('.dng');
-  
   try {
     let blob: Blob | null = null;
 
-    // STRATEGY FOR DNGs: 
-    // DNGs often have the JPEG in the 'thumbnail' IFD, not the 'preview' IFD.
-    // We try thumbnail first for DNG.
-    if (isDNG) {
-       console.log(`Attempting DNG extraction for ${file.name}...`);
-       blob = await exifr.thumbnail(file);
-       if (!blob) {
-         console.log("DNG thumbnail not found, trying preview...");
-         blob = await exifr.preview(file);
-       }
-    } else {
-       // Standard RAWs (CR2, ARW) usually prefer preview
+    // 1. Try Thumbnail first (Faster, works better for DNG/CR2 in browser)
+    blob = await exifr.thumbnail(file);
+    
+    // 2. If no thumbnail, try the full Preview image
+    if (!blob) {
+       console.log("No thumbnail found, trying preview extraction...");
        blob = await exifr.preview(file);
-       if (!blob) blob = await exifr.thumbnail(file);
     }
 
     if (blob) {
-      console.log(`Success: Extracted ${blob.size} bytes from ${file.name}`);
       return URL.createObjectURL(blob);
     } else {
       console.warn(`Failed: No embedded JPEG found in ${file.name}`);
@@ -391,10 +383,8 @@ const App: React.FC = () => {
               fullResUrl = rawUrl;
               thumbUrl = rawUrl; // Reuse the embedded JPEG as thumb
           } else {
-              // DNG Fallback: If parsing failed, show "Error Image"
-              // We do NOT use createObjectURL(file) for DNG because browsers
-              // can't render RAW data natively. It would just be transparent/broken.
-              console.warn(`Could not parse DNG: ${file.name}`);
+              // If RAW failed, show the Red Error Card
+              console.warn(`Could not parse RAW: ${file.name}`);
               fullResUrl = createErrorImage(file.name);
               thumbUrl = fullResUrl; 
           }
