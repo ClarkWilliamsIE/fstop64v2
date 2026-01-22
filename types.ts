@@ -1,4 +1,3 @@
-
 export type HSLChannel = 'red' | 'orange' | 'yellow' | 'green' | 'aqua' | 'blue' | 'purple' | 'magenta';
 
 export interface HSLParams {
@@ -56,6 +55,7 @@ export interface Photo {
   id: string;
   name: string;
   src: string;
+  thumbnailSrc?: string; // <--- NEW FIELD
   params: EditParams;
   lastEdited?: number;
   hiddenFromEdited?: boolean;
