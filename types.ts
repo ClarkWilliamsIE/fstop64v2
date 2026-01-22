@@ -6,6 +6,21 @@ export interface HSLParams {
   luminance: number;
 }
 
+// --- NEW INTERFACES ---
+export interface ColorGradePair {
+  hue: number;        // 0-360
+  saturation: number; // 0-100
+}
+
+export interface ColorGrading {
+  shadows: ColorGradePair;
+  midtones: ColorGradePair;
+  highlights: ColorGradePair;
+  blending: number; // 0-100 (Smoothness between ranges)
+  balance: number;  // -100 to +100 (Shift midtone point)
+}
+// ----------------------
+
 export interface CropParams {
   top: number;
   bottom: number;
@@ -28,23 +43,27 @@ export interface EditParams {
   dehaze: number;
   vibrance: number;
   saturation: number;
+  
+  // Parametric Curve (Existing)
   curveHighlights: number;
   curveLights: number;
   curveDarks: number;
   curveShadows: number;
+  
   hsl: Record<HSLChannel, HSLParams>;
+  
+  // NEW FIELD
+  colorGrading: ColorGrading;
+  
   vignette: number;
   crop: CropParams;
 }
 
-// --- UPDATED USER PROFILE ---
-// This now represents the "Hydrated" user state for the UI, 
-// combining Auth data + DB Profile + Calculated Export Logs
 export interface UserProfile {
-  id: string;          // from auth.users
-  email: string;       // from auth.users
-  is_pro: boolean;     // from public.profiles
-  export_count: number; // calculated from public.export_logs (current month)
+  id: string;
+  email: string;
+  is_pro: boolean;
+  export_count: number;
 }
 
 export interface Preset {
@@ -65,6 +84,7 @@ export interface Photo {
 
 const defaultHSL = (): HSLParams => ({ hue: 0, saturation: 0, luminance: 0 });
 
+// --- UPDATE DEFAULT PARAMS ---
 export const DEFAULT_PARAMS: EditParams = {
   profile: 'adobe-color',
   exposure: 0,
@@ -80,12 +100,12 @@ export const DEFAULT_PARAMS: EditParams = {
   dehaze: 0,
   vibrance: 0,
   saturation: 1,
+  
   curveHighlights: 0,
   curveLights: 0,
   curveDarks: 0,
   curveShadows: 0,
-  vignette: 0,
-  crop: { top: 0, bottom: 0, left: 0, right: 0 },
+  
   hsl: {
     red: defaultHSL(),
     orange: defaultHSL(),
@@ -95,7 +115,19 @@ export const DEFAULT_PARAMS: EditParams = {
     blue: defaultHSL(),
     purple: defaultHSL(),
     magenta: defaultHSL(),
-  }
+  },
+  
+  // NEW DEFAULTS
+  colorGrading: {
+    shadows: { hue: 0, saturation: 0 },
+    midtones: { hue: 0, saturation: 0 },
+    highlights: { hue: 0, saturation: 0 },
+    blending: 50,
+    balance: 0
+  },
+  
+  vignette: 0,
+  crop: { top: 0, bottom: 0, left: 0, right: 0 },
 };
 
 export const isPhotoEdited = (params: EditParams): boolean => {
@@ -113,6 +145,15 @@ export const isPhotoEdited = (params: EditParams): boolean => {
   if (params.saturation !== 1) return true;
   if (params.vignette !== 0) return true;
   if (params.profile !== 'adobe-color') return true;
+  
+  // Curve Check
+  if (params.curveHighlights !== 0 || params.curveLights !== 0 || 
+      params.curveDarks !== 0 || params.curveShadows !== 0) return true;
+
+  // Color Grading Check
+  const cg = params.colorGrading;
+  if (cg.shadows.saturation !== 0 || cg.midtones.saturation !== 0 || cg.highlights.saturation !== 0) return true;
+
   const { crop } = params;
   if (crop.top !== 0 || crop.bottom !== 0 || crop.left !== 0 || crop.right !== 0) return true;
   for (const key in params.hsl) {
