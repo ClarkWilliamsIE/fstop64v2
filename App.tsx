@@ -11,10 +11,14 @@ import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
 import { LoginModal, PaywallModal, LoginPromptModal, ExportOptionsModal } from './components/AuthModals';
 import AboutModal from './components/AboutModal';
+import FeedbackModal from './components/FeedbackModal'; // <--- NEW IMPORT
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
+
+// ... [Keep all HELPER functions: createErrorImage, isRawFile, decodeRawToCanvas, etc.] ...
+// ... [Keep LoadingOverlay, generateThumbnail] ...
 
 // --- HELPER: ERROR IMAGE ---
 const createErrorImage = (text: string) => {
@@ -33,13 +37,11 @@ const createErrorImage = (text: string) => {
   return canvas.toDataURL('image/jpeg');
 };
 
-// --- HELPER: RAW DETECTION ---
 const isRawFile = (file: File) => {
   const ext = file.name.split('.').pop()?.toLowerCase();
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: DECODE RAW TO CANVAS ---
 const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> => {
     if ((window as any).raw) {
         try {
@@ -100,7 +102,6 @@ const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> 
     return null;
 };
 
-// --- HELPER: CREATE PROXY (Downscale) ---
 const createProxyUrl = async (sourceCanvas: HTMLCanvasElement): Promise<string> => {
     const PROXY_SIZE = 2048; 
     const scale = Math.min(1, PROXY_SIZE / Math.max(sourceCanvas.width, sourceCanvas.height));
@@ -116,7 +117,6 @@ const createProxyUrl = async (sourceCanvas: HTMLCanvasElement): Promise<string> 
     return sourceCanvas.toDataURL('image/jpeg', 0.8);
 };
 
-// --- HELPER: AUTO CROP ---
 const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   if (rotationDeg === 0) return { top: 0, bottom: 0, left: 0, right: 0 };
   const rad = Math.abs((rotationDeg * Math.PI) / 180);
@@ -135,7 +135,6 @@ const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   return { top: insetY, bottom: insetY, left: insetX, right: insetX };
 };
 
-// --- Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
   return (
@@ -154,7 +153,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
-// --- Thumbnail Helper ---
 const generateThumbnail = async (url: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
@@ -177,7 +175,6 @@ const generateThumbnail = async (url: string): Promise<string> => {
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
 
-  // --- CDN INJECTION ---
   useEffect(() => {
     if (!(window as any).raw) {
         const s1 = document.createElement('script');
@@ -223,11 +220,11 @@ const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
-  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | 'export_options' | null>(null);
+  // --- UPDATED STATE TYPE ---
+  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | 'export_options' | 'feedback' | null>(null);
   const [exportTarget, setExportTarget] = useState<'single' | 'batch' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
-  // --- DATA STATE ---
   const [photos, setPhotos] = useState<Photo[]>([]);
   const fileRegistry = useRef<Record<string, File>>({});
   
@@ -336,22 +333,17 @@ const App: React.FC = () => {
     return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', quality));
   };
 
-  // --- TRIGGER THE MODAL ---
   const triggerExportFlow = (type: 'single' | 'batch') => {
       if (!user) { setModalType('login_prompt'); return; }
-      
       const check = canExport();
       if (!check.allowed) { if (check.reason === 'quota') setModalType('paywall'); return; }
-
       if (type === 'batch' && !profile?.is_pro) { setModalType('paywall'); return; }
-      
       setExportTarget(type);
       setModalType('export_options');
   };
 
-  // --- EXECUTE EXPORT (Called after modal selection) ---
   const runExport = async (quality: number) => {
-    setModalType(null); // Close modal
+    setModalType(null); 
 
     if (exportTarget === 'single' && activePhoto) {
         try {
@@ -438,7 +430,6 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
-      {/* --- ADDED EXPORT STATUS LOADING BAR HERE --- */}
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
       {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Processing Export" />}
       {exportStatus && <LoadingOverlay current={exportStatus.current} total={exportStatus.total} label="Exporting" />}
@@ -459,13 +450,15 @@ const App: React.FC = () => {
         onManage={manageSubscription}
         isBeta={false} 
         onToggleBeta={toggleBeta}
-        onAbout={() => setShowAbout(true)} 
+        onAbout={() => setShowAbout(true)}
+        onFeedback={() => setModalType('feedback')} // <--- HOOKED UP HERE
       />
       
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
       {modalType === 'export_options' && <ExportOptionsModal onClose={() => setModalType(null)} onConfirm={runExport} />}
+      {modalType === 'feedback' && <FeedbackModal onClose={() => setModalType(null)} />}
       
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
