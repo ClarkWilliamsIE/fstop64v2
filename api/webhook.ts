@@ -10,7 +10,7 @@ const supabase = createClient(
 );
 
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2023-10-16',
+  apiVersion: '2025-12-15.clover' as any, // Cast to any to bypass strict version checks
 });
 
 // Disable Vercel's default body parser so we can verify the signature
