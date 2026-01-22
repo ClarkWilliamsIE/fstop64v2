@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
-// JSZip is no longer used for the active batch logic, but kept in imports if you revert later
 import JSZip from 'jszip'; 
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
@@ -10,7 +9,8 @@ import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
-import { LoginModal, PaywallModal } from './components/AuthModals';
+// Import the new modal
+import { LoginModal, PaywallModal, LoginPromptModal } from './components/AuthModals';
 import AboutModal from './components/AboutModal';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
@@ -97,12 +97,12 @@ const App: React.FC = () => {
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
-  // UI State
-  const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
+  // UI State - Added 'login_prompt' type
+  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
   // Data State
-  const [photos, setPhotos] = useState<Photo[]>([]); // Start Empty
+  const [photos, setPhotos] = useState<Photo[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
@@ -148,7 +148,6 @@ const App: React.FC = () => {
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
-    // 1. Rotation Logic
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
     
@@ -170,7 +169,6 @@ const App: React.FC = () => {
       }
     }
 
-    // 2. Crop & Pipeline Logic
     const canvas = document.createElement('canvas');
     const { crop } = params;
     const sx = (crop.left / 100) * sourceCanvas.width;
@@ -192,10 +190,15 @@ const App: React.FC = () => {
   };
 
   const processExportWithGate = async (photo: Photo) => {
+    // --- CHANGED LOGIC HERE ---
+    if (!user) {
+      setModalType('login_prompt'); // Show simple login prompt
+      return;
+    }
+
     const check = canExport();
     if (!check.allowed) {
-      if (check.reason === 'auth') setModalType('login');
-      else if (check.reason === 'quota') setModalType('paywall');
+      if (check.reason === 'quota') setModalType('paywall');
       return;
     }
 
@@ -216,8 +219,13 @@ const App: React.FC = () => {
     }
   };
 
-  // --- UPDATED: SEQUENTIAL DOWNLOAD (NO ZIP) ---
   const handleBatchExport = async () => {
+    // Basic check for signed out users
+    if (!user) {
+        setModalType('login_prompt');
+        return;
+    }
+
     if (!profile?.is_pro) {
       setModalType('paywall');
       return;
@@ -225,28 +233,20 @@ const App: React.FC = () => {
 
     if (editedPhotos.length === 0) return;
 
-    // Use Batch Progress for UI, but handle files one by one
     setBatchProgress({ current: 0, total: editedPhotos.length });
 
     try {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
-        
-        // 1. Process High Res
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
         
         if (blob) {
-          // 2. Trigger Download immediately (No Zip)
           saveAs(blob, `f64_${photo.name}`);
-          
-          // 3. Log usage
           await incrementExport();
         }
 
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
-        
-        // 4. Critical: Pause to prevent browser "Pop-up Blocker" or throttling
         await new Promise(r => setTimeout(r, 800)); 
       }
 
@@ -315,14 +315,13 @@ const App: React.FC = () => {
       {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
+      {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
+      
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
       <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileChange} />
 
-      {/* --- RESPONSIVE LAYOUT --- */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden relative">
-        
-        {/* VIEWPORT AREA */}
         <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0 overflow-hidden h-1/2 md:h-auto">
           <div className="flex-1 relative flex items-center justify-center p-8 overflow-hidden">
             {activeImage ? (
@@ -354,7 +353,6 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* SIDEBAR AREA */}
         <aside className="w-full md:w-80 h-1/2 md:h-full bg-[#1e1e1e] border-t md:border-t-0 md:border-l border-zinc-800 flex flex-col z-10 shadow-2xl flex-shrink-0">
           <Sidebar 
             params={activePhoto?.params || DEFAULT_PARAMS} 
