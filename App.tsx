@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
-import exifr from 'exifr'; // <--- NEW IMPORT
+import exifr from 'exifr';
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -22,33 +22,27 @@ const isRawFile = (file: File) => {
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw'].includes(ext || '');
 };
 
-// --- HELPER: EXTRACT PREVIEW FROM RAW ---
-const loadImageUrl = async (file: File): Promise<string> => {
-  if (isRawFile(file)) {
-    try {
-      // 1. Try to get the large preview
-      let blob = await exifr.preview(file);
-      
-      // 2. If no preview, try the thumbnail
-      if (!blob) {
-        blob = await exifr.thumbnail(file);
-      }
-
-      // 3. If we found something, convert to URL
-      if (blob) {
-        return URL.createObjectURL(blob);
-      } else {
-        console.warn("No embedded preview found in RAW file");
-        // Fallback: Return original (might fail in img tag but worth a shot)
-        return URL.createObjectURL(file);
-      }
-    } catch (e) {
-      console.error("Failed to parse RAW", e);
-      return URL.createObjectURL(file);
+// --- HELPER: ROBUST RAW LOADER ---
+const loadRawImage = async (file: File): Promise<string | null> => {
+  try {
+    // 1. Try extracting the largest embedded JPEG preview
+    let blob = await exifr.preview(file);
+    
+    // 2. If no large preview, try the smaller thumbnail
+    if (!blob) {
+      console.warn("No large preview found, trying thumbnail...");
+      blob = await exifr.thumbnail(file);
     }
+
+    if (blob) {
+      return URL.createObjectURL(blob);
+    }
+    
+    return null;
+  } catch (e) {
+    console.error("Failed to parse RAW:", e);
+    return null;
   }
-  // Standard JPG/PNG
-  return URL.createObjectURL(file);
 };
 
 // --- HELPER: AUTO CROP MATH ---
@@ -107,42 +101,35 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
-// --- Thumbnail Helper (Updated for RAW) ---
-const generateThumbnail = async (file: File): Promise<string> => {
-  // If RAW, try to extract thumbnail using exifr
-  if (isRawFile(file)) {
-      try {
-          const blob = await exifr.thumbnail(file);
-          if (blob) return URL.createObjectURL(blob);
-          // Fallback to preview if thumbnail missing
-          const preview = await exifr.preview(file);
-          if (preview) return URL.createObjectURL(preview);
-      } catch (e) {
-          console.error("Thumb extraction failed", e);
-      }
-  }
+// --- Thumbnail Helper ---
+const generateThumbnail = async (file: File, existingUrl?: string): Promise<string> => {
+  // If we already extracted a URL for the main view (from RAW), reuse it to make a small thumb
+  const sourceUrl = existingUrl || (isRawFile(file) ? await loadRawImage(file) : URL.createObjectURL(file));
+
+  // If RAW extraction completely failed, return a placeholder or empty
+  if (!sourceUrl) return '';
 
   return new Promise((resolve) => {
-    // If not RAW, or if RAW extraction failed, use standard method
-    // (Note: Standard method will fail for RAWs in basic Image(), so we use loadImageUrl helper inside)
-    loadImageUrl(file).then(url => {
-        const img = new Image();
-        img.onload = () => {
-            const canvas = document.createElement('canvas');
-            const ctx = canvas.getContext('2d');
-            const scale = Math.min(150 / img.width, 150 / img.height);
-            canvas.width = img.width * scale;
-            canvas.height = img.height * scale;
-            if (ctx) {
-                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : url), 'image/jpeg', 0.7);
-            } else {
-                resolve(url);
-            }
-        };
-        img.onerror = () => resolve(url); // Return generic URL if fail
-        img.src = url;
-    });
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      // Force consistent thumbnail size
+      const scale = Math.min(150 / img.width, 150 / img.height);
+      canvas.width = img.width * scale;
+      canvas.height = img.height * scale;
+      if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : sourceUrl), 'image/jpeg', 0.6);
+      } else {
+          resolve(sourceUrl);
+      }
+    };
+    img.onerror = () => {
+        // If image fails to load, resolve with transparent pixel or error placeholder
+        resolve(''); 
+    };
+    img.src = sourceUrl;
   });
 };
 
@@ -200,7 +187,10 @@ const App: React.FC = () => {
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
     const img = new Image();
-    // No crossOrigin needed for blob URLs usually, but safe to keep
+    // Important: Handle error if the blob URL is invalid
+    img.onerror = () => {
+        console.error("Could not load image source for:", photo.name);
+    };
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
     img.src = photo.src;
   }, [activePhotoId, photos, imageElements]);
@@ -295,7 +285,7 @@ const App: React.FC = () => {
       const blob = await processImageToBlob(img, photo.params);
       
       if (blob) {
-        saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); // Ensure exported file is JPG
+        saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`);
         await incrementExport();
       }
     } catch (e) {
@@ -354,10 +344,26 @@ const App: React.FC = () => {
 
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
+      let fullResUrl = '';
       
-      // Use the new loader that handles RAWs
-      const fullResUrl = await loadImageUrl(file);
-      const thumbUrl = await generateThumbnail(file);
+      // 1. Try to extract RAW
+      if (isRawFile(file)) {
+          const rawUrl = await loadRawImage(file);
+          if (rawUrl) {
+              fullResUrl = rawUrl;
+          } else {
+              // Failed to extract raw, skip this file or alert user
+              console.warn(`Could not extract preview for ${file.name}`);
+              setImportProgress({ current: i + 1, total: fileList.length });
+              continue; 
+          }
+      } else {
+          // Standard Image
+          fullResUrl = URL.createObjectURL(file);
+      }
+      
+      // 2. Generate Thumb from the URL we just made (reusing it saves memory/time)
+      const thumbUrl = await generateThumbnail(file, fullResUrl);
       
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       
@@ -402,14 +408,12 @@ const App: React.FC = () => {
         onAbout={() => setShowAbout(true)} 
       />
       
-      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
       
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
-      {/* UPDATE INPUT TO ACCEPT RAW EXTENSIONS */}
       <input 
         type="file" 
         ref={fileInputRef} 
