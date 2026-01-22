@@ -38,6 +38,10 @@ const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             We never see your photos. We don't train AI on them. They stay yours.
           </p>
 
+           <p>
+            <strong>F/STOP 64 is 100% free for people processing 30 photos a month or less. If you want to pay to use, the low price will go toward developing new features</strong> 
+          </p>
+
           <div className="bg-zinc-900/50 p-4 rounded-lg border border-zinc-800 my-4">
             <h3 className="text-white font-bold mb-1 flex items-center gap-2">
               <span className="text-green-500">NZD $2.00</span>
