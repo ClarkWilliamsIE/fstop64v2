@@ -8,7 +8,7 @@ import TopBar from './components/TopBar';
 import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
-import { usePresets } from './hooks/usePresets'; // <--- Ensure this file exists
+import { usePresets } from './hooks/usePresets';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
@@ -56,7 +56,6 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
-  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -75,12 +74,14 @@ const App: React.FC = () => {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
-  // 2. --- STABLE APP LOGIC ---
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
+  
+  // START EMPTY
   const [photos, setPhotos] = useState<Photo[]>([]);
+  
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
@@ -92,20 +93,7 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  useEffect(() => {
-    const demoPhotos = [
-      { id: '1', name: 'Coastline.jpg', src: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
-      { id: '2', name: 'Urban.jpg', src: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=2000&q=80', thumbnailSrc: 'https://images.unsplash.com/photo-1544005313-94ddf0286df2?auto=format&fit=crop&w=200&q=60', params: { ...DEFAULT_PARAMS } },
-    ];
-    setPhotos(demoPhotos);
-    setActivePhotoId('1');
-    demoPhotos.forEach(p => {
-      const img = new Image();
-      img.crossOrigin = "anonymous";
-      img.src = p.src;
-      img.onload = () => setImageElements(prev => ({ ...prev, [p.id]: img }));
-    });
-  }, []);
+  // REMOVED DEMO PHOTOS USE EFFECT
 
   useEffect(() => {
     if (!activePhotoId) return;
@@ -139,7 +127,6 @@ const App: React.FC = () => {
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
-    // 1. ROTATION STEP
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
     
@@ -161,7 +148,6 @@ const App: React.FC = () => {
       }
     }
 
-    // 2. CROP & PIPELINE STEP
     const canvas = document.createElement('canvas');
     const { crop } = params;
     const sx = (crop.left / 100) * sourceCanvas.width;
@@ -305,14 +291,19 @@ const App: React.FC = () => {
               <Viewport image={activeImage} params={activePhoto!.params} isCropMode={isCropMode} onUpdateCrop={(crop) => handleUpdateParams({ ...activePhoto!.params, crop })} />
             ) : (
               <div className="flex flex-col items-center justify-center text-zinc-700 animate-pulse">
-                {activePhotoId ? (
-                  <>
-                    <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
-                    <span className="text-xs font-bold uppercase tracking-widest">Loading High-Res Asset...</span>
-                  </>
-                ) : (
-                  <span className="font-medium text-sm">Select an asset to begin developing</span>
-                )}
+                {/* Empty State Instructions */}
+                <div className="w-16 h-16 mb-4 text-zinc-800">
+                    <svg fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                </div>
+                <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500"
+                >
+                    Import Photos
+                </button>
+                <span className="mt-2 text-xs text-zinc-600">Supports JPG, PNG</span>
               </div>
             )}
           </div>
@@ -330,13 +321,10 @@ const App: React.FC = () => {
           <Sidebar 
             params={activePhoto?.params || DEFAULT_PARAMS} 
             onChange={handleUpdateParams}
-            
-            // PRESET PROPS
             presets={presets}
             onSavePreset={(name) => activePhoto && savePreset(name || `Preset ${presets.length + 1}`, activePhoto.params)}
             onApplyPreset={(p) => handleUpdateParams({ ...p.params })}
             onDeletePreset={deletePreset}
-
             editedPhotos={editedPhotos}
             onBatchExportEdited={handleBatchExport} 
             onSelectPhoto={setActivePhotoId}
