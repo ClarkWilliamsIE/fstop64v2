@@ -12,6 +12,8 @@ import { usePresets } from './hooks/usePresets';
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
+import Privacy from './Privacy'; // Ensure you created src/Privacy.tsx
+import Terms from './Terms';     // Ensure you created src/Terms.tsx
 
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
@@ -56,6 +58,21 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
+  // 0. --- SIMPLE ROUTING LOGIC ---
+  const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
+
+  useEffect(() => {
+    const onPopState = () => setCurrentPath(window.location.pathname);
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
+
+  // Return Legal Pages early if route matches
+  if (currentPath === '/privacy') return <Privacy />;
+  if (currentPath === '/terms') return <Terms />;
+
+
+  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -74,12 +91,13 @@ const App: React.FC = () => {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
+  // 2. --- STABLE APP LOGIC ---
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
   
-  // START EMPTY
+  // Start Empty (Clean Slate)
   const [photos, setPhotos] = useState<Photo[]>([]);
   
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
@@ -92,8 +110,6 @@ const App: React.FC = () => {
   
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // REMOVED DEMO PHOTOS USE EFFECT
 
   useEffect(() => {
     if (!activePhotoId) return;
@@ -127,6 +143,7 @@ const App: React.FC = () => {
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
+    // 1. Rotation Step
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
     
@@ -148,6 +165,7 @@ const App: React.FC = () => {
       }
     }
 
+    // 2. Crop & Pipeline Step
     const canvas = document.createElement('canvas');
     const { crop } = params;
     const sx = (crop.left / 100) * sourceCanvas.width;
