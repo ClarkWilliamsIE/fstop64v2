@@ -45,7 +45,7 @@ const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
             </h3>
             <p className="text-xs text-zinc-400">
               This app costs less than a flat white. That price helps cover the server costs for the database and authentication. 
-              It will never increase for early adopters. No hidden tiers, no rug pulls. Just a fair price for a useful tool.
+              It will never increase. No hidden tiers, no rug pulls. Just a fair price for a useful tool.
             </p>
           </div>
 
