@@ -15,13 +15,17 @@ interface TopBarProps {
   onSignOut: () => void;
   onUpgrade: () => void;
   onManage: () => void;
+  
+  // NEW PROP
+  onAbout: () => void;
+
   isBeta?: boolean;
   onToggleBeta?: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({ 
   onOpen, onExport, onReset, onCopy, onPaste, canPaste, isExporting, 
-  user, profile, onSignIn, onSignOut, onUpgrade, onManage,
+  user, profile, onSignIn, onSignOut, onUpgrade, onManage, onAbout, // <--- Destructure onAbout
   isBeta, onToggleBeta
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -30,7 +34,7 @@ const TopBar: React.FC<TopBarProps> = ({
     <header className="bg-[#1e1e1e] border-b border-zinc-800 z-50 shadow-lg relative shrink-0">
       <div className="h-14 flex items-center justify-between px-4 md:px-6">
         
-        {/* LEFT: Logo & Beta Toggle */}
+        {/* LEFT: Logo */}
         <div className="flex items-center gap-4">
           <h1 className="text-sm font-light tracking-[0.2em] text-white flex items-center select-none">
             <span className="w-8 h-8 border border-white/20 rounded-full flex items-center justify-center text-[10px] mr-3 font-bold bg-gradient-to-br from-zinc-700 to-zinc-900 shadow-xl">
@@ -40,8 +44,16 @@ const TopBar: React.FC<TopBarProps> = ({
             <span className="text-zinc-500 ml-1 hidden sm:inline">64</span>
           </h1>
           
+          {/* DESKTOP ABOUT LINK */}
+          <button 
+            onClick={onAbout}
+            className="hidden md:block text-[10px] font-bold text-zinc-500 hover:text-zinc-300 uppercase tracking-widest transition-colors ml-2"
+          >
+            About
+          </button>
+
           {onToggleBeta && (
-            <label className="flex items-center gap-2 cursor-pointer group">
+            <label className="flex items-center gap-2 cursor-pointer group ml-2">
               <div className="relative">
                 <input type="checkbox" className="sr-only peer" checked={isBeta} onChange={onToggleBeta} />
                 <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
@@ -53,7 +65,7 @@ const TopBar: React.FC<TopBarProps> = ({
           )}
         </div>
         
-        {/* RIGHT: Desktop Buttons (Hidden on Mobile) */}
+        {/* RIGHT: Desktop Buttons */}
         <div className="hidden md:flex items-center space-x-6">
           <div className="flex items-center space-x-1 border-l border-zinc-800 pl-6 h-8">
              <button onClick={onCopy} className="px-3 py-1 text-[11px] font-medium text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-800">Copy</button>
@@ -115,9 +127,11 @@ const TopBar: React.FC<TopBarProps> = ({
              <button onClick={onReset} className="text-xs text-red-400">Reset</button>
           </div>
 
-          <div className="border-t border-zinc-800 pt-4">
+          <div className="border-t border-zinc-800 pt-4 space-y-3">
+            <button onClick={() => { onAbout(); setIsMenuOpen(false); }} className="w-full text-left text-xs font-bold text-zinc-400 uppercase tracking-widest">About F/STOP 64</button>
+            
             {user ? (
-              <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 pt-2 border-t border-zinc-800/50">
                 <div className="flex justify-between items-center">
                    <span className="text-xs text-zinc-500">{user.email}</span>
                    <span className={`text-[10px] font-bold ${profile?.is_pro ? 'text-blue-400' : 'text-zinc-400'}`}>
