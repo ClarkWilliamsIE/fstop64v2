@@ -1,6 +1,6 @@
 import React from 'react';
 
-// --- LOGIN MODAL ---
+// --- 1. LOGIN MODAL (Standard Sign In) ---
 interface LoginModalProps {
   onClose: () => void;
   onAction: () => void;
@@ -33,14 +33,14 @@ export const LoginModal: React.FC<LoginModalProps> = ({ onClose, onAction }) => 
         {/* Legal Footer */}
         <p className="mt-6 text-[10px] text-zinc-500 leading-normal">
           By continuing, you agree to our<br/>
-          <a href="/terms" className="underline hover:text-zinc-300">Terms of Service</a> and <a href="/privacy" className="underline hover:text-zinc-300">Privacy Policy</a>.
+          <a href="/terms" target="_blank" className="underline hover:text-zinc-300">Terms of Service</a> and <a href="/privacy" target="_blank" className="underline hover:text-zinc-300">Privacy Policy</a>.
         </p>
       </div>
     </div>
   );
 };
 
-// --- PAYWALL MODAL ---
+// --- 2. PAYWALL MODAL (Upgrade to Pro) ---
 interface PaywallModalProps {
   onClose: () => void;
   onAction: () => void;
@@ -95,6 +95,45 @@ export const PaywallModal: React.FC<PaywallModalProps> = ({ onClose, onAction, i
         <p className="mt-4 text-[10px] text-zinc-500">
           Secure payment via Stripe. Cancel anytime.
         </p>
+      </div>
+    </div>
+  );
+};
+
+// --- 3. LOGIN PROMPT MODAL (Soft "Sign in to export") ---
+interface LoginPromptModalProps {
+  onClose: () => void;
+  onSignIn: () => void;
+}
+
+export const LoginPromptModal: React.FC<LoginPromptModalProps> = ({ onClose, onSignIn }) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm select-none p-4" onClick={onClose}>
+      <div className="bg-[#1e1e1e] p-6 rounded-xl shadow-2xl w-80 text-center border border-zinc-800 relative" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3 text-zinc-500 hover:text-white transition-colors">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+
+        <div className="w-12 h-12 bg-zinc-800 rounded-full mx-auto flex items-center justify-center mb-4 text-2xl">
+          💾
+        </div>
+        
+        <h3 className="text-lg font-bold text-white mb-2">Save Your Work</h3>
+        <p className="text-xs text-zinc-400 mb-6 leading-relaxed">
+          Sign in to export your photos for free. No credit card required.
+        </p>
+
+        <button 
+          onClick={onSignIn}
+          className="w-full flex items-center justify-center gap-3 bg-white text-black font-bold py-2.5 px-4 rounded hover:bg-zinc-200 transition-all mb-3"
+        >
+          <img src="https://www.svgrepo.com/show/475656/google-color.svg" alt="Google" className="w-4 h-4" />
+          <span className="text-xs uppercase tracking-wide">Sign in with Google</span>
+        </button>
+        
+        <button onClick={onClose} className="text-[10px] text-zinc-600 hover:text-zinc-400 underline">
+          Cancel
+        </button>
       </div>
     </div>
   );
