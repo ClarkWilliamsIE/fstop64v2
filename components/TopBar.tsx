@@ -15,17 +15,15 @@ interface TopBarProps {
   onSignOut: () => void;
   onUpgrade: () => void;
   onManage: () => void;
-  
-  // NEW PROP
   onAbout: () => void;
-
+  onFeedback: () => void; // Added for the new Suggest a Feature modal
   isBeta?: boolean;
   onToggleBeta?: () => void;
 }
 
 const TopBar: React.FC<TopBarProps> = ({ 
   onOpen, onExport, onReset, onCopy, onPaste, canPaste, isExporting, 
-  user, profile, onSignIn, onSignOut, onUpgrade, onManage, onAbout, // <--- Destructure onAbout
+  user, profile, onSignIn, onSignOut, onUpgrade, onManage, onAbout, onFeedback,
   isBeta, onToggleBeta
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -34,7 +32,7 @@ const TopBar: React.FC<TopBarProps> = ({
     <header className="bg-[#1e1e1e] border-b border-zinc-800 z-50 shadow-lg relative shrink-0">
       <div className="h-14 flex items-center justify-between px-4 md:px-6">
         
-        {/* LEFT: Logo */}
+        {/* LEFT: Logo & Beta Toggle */}
         <div className="flex items-center gap-4">
           <h1 className="text-sm font-light tracking-[0.2em] text-white flex items-center select-none">
             <span className="w-8 h-8 border border-white/20 rounded-full flex items-center justify-center text-[10px] mr-3 font-bold bg-gradient-to-br from-zinc-700 to-zinc-900 shadow-xl">
@@ -44,7 +42,6 @@ const TopBar: React.FC<TopBarProps> = ({
             <span className="text-zinc-500 ml-1 hidden sm:inline">64</span>
           </h1>
           
-          {/* DESKTOP ABOUT LINK */}
           <button 
             onClick={onAbout}
             className="hidden md:block text-[10px] font-bold text-zinc-500 hover:text-zinc-300 uppercase tracking-widest transition-colors ml-2"
@@ -52,8 +49,17 @@ const TopBar: React.FC<TopBarProps> = ({
             About
           </button>
 
+          {/* New Feature Button for Desktop */}
+          <button 
+            onClick={onFeedback}
+            className="hidden md:flex items-center gap-1.5 text-[10px] font-bold text-yellow-600/80 hover:text-yellow-500 uppercase tracking-widest transition-colors ml-4 group"
+          >
+            <span className="text-xs group-hover:scale-110 transition-transform">💡</span>
+            Suggest Feature
+          </button>
+
           {onToggleBeta && (
-            <label className="flex items-center gap-2 cursor-pointer group ml-2">
+            <label className="flex items-center gap-2 cursor-pointer group ml-4">
               <div className="relative">
                 <input type="checkbox" className="sr-only peer" checked={isBeta} onChange={onToggleBeta} />
                 <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-red-600"></div>
@@ -65,7 +71,7 @@ const TopBar: React.FC<TopBarProps> = ({
           )}
         </div>
         
-        {/* RIGHT: Desktop Buttons */}
+        {/* RIGHT: Desktop Controls */}
         <div className="hidden md:flex items-center space-x-6">
           <div className="flex items-center space-x-1 border-l border-zinc-800 pl-6 h-8">
              <button onClick={onCopy} className="px-3 py-1 text-[11px] font-medium text-zinc-400 hover:text-white transition-colors rounded hover:bg-zinc-800">Copy</button>
@@ -97,18 +103,23 @@ const TopBar: React.FC<TopBarProps> = ({
             <button onClick={onReset} className="px-4 py-1.5 text-xs text-zinc-400 hover:text-white transition-colors">Reset</button>
             <button onClick={onOpen} className="px-4 py-1.5 text-xs font-medium bg-zinc-800 text-zinc-300 hover:bg-zinc-700 rounded transition-all border border-zinc-700">Import</button>
             <button disabled={isExporting} onClick={onExport} className={`px-5 py-1.5 text-xs font-bold rounded transition-all shadow-sm uppercase tracking-widest ${isExporting ? 'bg-blue-800 text-blue-300 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-500'}`}>
-              {isExporting ? '...' : 'Export'}
+              {isExporting ? (
+                 <span className="flex items-center gap-2">
+                   <svg className="animate-spin h-3 w-3 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                   ...
+                 </span>
+              ) : 'Export'}
             </button>
           </div>
         </div>
 
-        {/* MOBILE: Hamburger Menu Button */}
+        {/* MOBILE: Hamburger */}
         <button 
           className="md:hidden p-2 text-zinc-400 hover:text-white"
           onClick={() => setIsMenuOpen(!isMenuOpen)}
         >
           <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={isMenuOpen ? "M6 18L18 6M6 6l12 12" : "M4 6h16M4 12h16M4 18h16"} />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={isMenuOpen ? "M6 18L18 6" : "M4 6h16M4 12h16M4 18h16"} />
           </svg>
         </button>
       </div>
@@ -122,12 +133,13 @@ const TopBar: React.FC<TopBarProps> = ({
           </div>
           
           <div className="flex justify-between items-center border-t border-zinc-800 pt-4">
-             <button onClick={onCopy} className="text-xs text-zinc-400">Copy Settings</button>
-             <button disabled={!canPaste} onClick={onPaste} className="text-xs text-zinc-400 disabled:opacity-50">Paste Settings</button>
-             <button onClick={onReset} className="text-xs text-red-400">Reset</button>
+             <button onClick={onCopy} className="text-xs text-zinc-400 font-bold uppercase tracking-widest">Copy Settings</button>
+             <button disabled={!canPaste} onClick={onPaste} className="text-xs text-zinc-400 font-bold uppercase tracking-widest disabled:opacity-50">Paste Settings</button>
+             <button onClick={onReset} className="text-xs text-red-400 font-bold uppercase tracking-widest">Reset</button>
           </div>
 
-          <div className="border-t border-zinc-800 pt-4 space-y-3">
+          <div className="border-t border-zinc-800 pt-4 flex flex-col gap-4">
+            <button onClick={() => { onFeedback(); setIsMenuOpen(false); }} className="w-full text-left text-xs font-bold text-yellow-500 uppercase tracking-widest">💡 Suggest a Feature</button>
             <button onClick={() => { onAbout(); setIsMenuOpen(false); }} className="w-full text-left text-xs font-bold text-zinc-400 uppercase tracking-widest">About F/STOP 64</button>
             
             {user ? (
@@ -141,12 +153,12 @@ const TopBar: React.FC<TopBarProps> = ({
                 {profile?.is_pro ? (
                     <button onClick={onManage} className="w-full py-2 bg-zinc-800 text-zinc-300 rounded text-xs">Manage Subscription</button>
                 ) : (
-                    <button onClick={onUpgrade} className="w-full py-2 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded text-xs font-bold">Upgrade to Pro</button>
+                    <button onClick={onUpgrade} className="w-full py-2 bg-gradient-to-r from-amber-500 to-orange-600 text-white rounded text-xs font-bold uppercase tracking-widest">Upgrade to Pro</button>
                 )}
-                <button onClick={onSignOut} className="w-full py-2 text-zinc-500 hover:text-white text-xs">Sign Out</button>
+                <button onClick={onSignOut} className="w-full py-2 text-zinc-500 hover:text-white text-xs font-bold uppercase tracking-widest">Sign Out</button>
               </div>
             ) : (
-              <button onClick={onSignIn} className="w-full py-2 bg-zinc-800 text-blue-400 font-bold rounded text-xs">Sign In / Sign Up</button>
+              <button onClick={onSignIn} className="w-full py-2 bg-zinc-800 text-blue-400 font-bold rounded text-xs uppercase tracking-widest">Sign In / Sign Up</button>
             )}
           </div>
         </div>
