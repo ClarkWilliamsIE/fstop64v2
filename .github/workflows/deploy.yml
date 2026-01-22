@@ -2,7 +2,8 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [ main ] # or master, depending on your default branch
+    branches: [ main ] 
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,18 +20,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Set up Node
+      
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Install dependencies
+          
+      - name: Install Dependencies
         run: npm install
-      - name: Build
+        
+      - name: Build Website
         run: npm run build
-        env:
-           # If you have an API key, add it to GitHub Secrets and reference it here
-           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      - name: Upload artifact
+        
+      - name: Upload Artifact
         uses: actions/upload-pages-artifact@v3
         with:
           path: ./dist
