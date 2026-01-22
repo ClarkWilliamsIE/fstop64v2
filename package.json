@@ -9,14 +9,16 @@
   "dependencies": {
     "@supabase/supabase-js": "^2.39.7",
     "buffer": "^6.0.3",
+    "micro": "^10.0.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "stripe": "^20.2.0"
   },
   "devDependencies": {
+    "@types/micro": "^7.3.7",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",
-    "@vercel/node": "^4.0.0",
+    "@vercel/node": "^5.5.26",
     "@vitejs/plugin-react": "^4.2.0",
     "autoprefixer": "^10.4.16",
     "postcss": "^8.4.31",
