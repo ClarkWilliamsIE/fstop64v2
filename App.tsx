@@ -8,6 +8,7 @@ import TopBar from './components/TopBar';
 import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
+import { usePresets } from './hooks/usePresets'; // <--- Ensure this file exists
 import { LoginModal, PaywallModal } from './components/AuthModals';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
@@ -55,6 +56,7 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
+  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -73,12 +75,13 @@ const App: React.FC = () => {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
+  // 2. --- STABLE APP LOGIC ---
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
-  const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
+  const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
+  const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
-  const [presets, setPresets] = useState<Preset[]>([]);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
@@ -327,9 +330,13 @@ const App: React.FC = () => {
           <Sidebar 
             params={activePhoto?.params || DEFAULT_PARAMS} 
             onChange={handleUpdateParams}
+            
+            // PRESET PROPS
             presets={presets}
-            onSavePreset={(name) => activePhoto && setPresets(prev => [...prev, { id: Date.now().toString(), name: name || `New Preset`, params: { ...activePhoto.params } }])}
+            onSavePreset={(name) => activePhoto && savePreset(name || `Preset ${presets.length + 1}`, activePhoto.params)}
             onApplyPreset={(p) => handleUpdateParams({ ...p.params })}
+            onDeletePreset={deletePreset}
+
             editedPhotos={editedPhotos}
             onBatchExportEdited={handleBatchExport} 
             onSelectPhoto={setActivePhotoId}
