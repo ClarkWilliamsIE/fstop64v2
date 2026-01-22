@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-// We import styles/types but rely on CDN for heavy RAW libs
+// Import Types/Components
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -26,7 +26,7 @@ const createErrorImage = (text: string) => {
   if (ctx) {
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, 300, 200);
-    ctx.strokeStyle = '#ef4444'; // Red
+    ctx.strokeStyle = '#ef4444';
     ctx.lineWidth = 4;
     ctx.strokeRect(10, 10, 280, 180);
     ctx.fillStyle = '#ef4444';
@@ -39,6 +39,19 @@ const createErrorImage = (text: string) => {
     ctx.fillText(text.slice(0, 20), 150, 130);
   }
   return canvas.toDataURL('image/jpeg');
+};
+
+// --- HELPER: BLOB CONVERTER ---
+// Ensures whatever exifr returns (Buffer or Blob) gets turned into a valid URL
+const rawDataToUrl = (data: any): string => {
+    if (!data) return '';
+    let blob: Blob;
+    if (data instanceof Blob) {
+        blob = data;
+    } else {
+        blob = new Blob([data], { type: 'image/jpeg' });
+    }
+    return URL.createObjectURL(blob);
 };
 
 // --- HELPER: RAW DETECTION ---
@@ -57,12 +70,11 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
         const arrayBuffer = await file.arrayBuffer();
         const ifds = UTIF.decode(arrayBuffer);
         
-        // Scan for the largest valid image
         let page = ifds[0];
+        // Scan for the largest valid image
         let maxPixels = 0;
         for (let i = 0; i < ifds.length; i++) {
              const p = ifds[i];
-             // Ensure it has dimensions and isn't some weird metadata block
              if (p.width && p.height) {
                  const pixels = p.width * p.height;
                  if (pixels > maxPixels) {
@@ -72,10 +84,7 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
              }
         }
 
-        if (!page || !page.width || !page.height) {
-             console.warn("UTIF: No valid image data found in IFDs");
-             return null;
-        }
+        if (!page || !page.width || !page.height) return null;
 
         UTIF.decodeImage(arrayBuffer, page);
         const rgba = UTIF.toRGBA8(page);
@@ -90,9 +99,7 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
         imgData.data.set(rgba);
         ctx.putImageData(imgData, 0, 0);
 
-        // Use higher quality JPEG encoding for the main view
         return canvas.toDataURL('image/jpeg', 0.95);
-
     } catch (e) {
         console.warn("UTIF decode failed:", e);
         return null;
@@ -108,53 +115,36 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     return null;
   }
 
+  // --- ATTEMPT 1: HIGH QUALITY PREVIEW ---
   try {
-    // STRATEGY 1: FAST EXTRACT (exifr)
-    let rawData: any = null;
-    
-    try {
-        // --- QUALITY FIX IS HERE ---
-        // 1. Try getting the largest preview FIRST
-        console.log(`Attempting large preview extraction for ${file.name}...`);
-        rawData = await exifr.preview(file);
-        
-        // 2. If no large preview, fall back to the smaller thumbnail
-        if (!rawData) {
-            console.log("No large preview found, falling back to thumbnail...");
-            rawData = await exifr.thumbnail(file);
-        }
-    } catch(e) { 
-        console.debug('Exifr extraction skipped:', e); 
+    console.log(`Trying Preview for ${file.name}...`);
+    const previewData = await exifr.preview(file);
+    if (previewData) {
+        console.log("✅ Preview Found");
+        return rawDataToUrl(previewData);
     }
+  } catch(e) { console.debug("Preview extraction skipped."); }
 
-    if (rawData) {
-      console.log(`Exifr Success: ${file.name}, Size: ${rawData.byteLength || rawData.size}`);
-      
-      // Wrap raw data in a Blob so URL.createObjectURL accepts it
-      let blob: Blob;
-      if (rawData instanceof Blob) {
-          blob = rawData;
-      } else {
-          blob = new Blob([rawData], { type: 'image/jpeg' });
-      }
-      
-      return URL.createObjectURL(blob);
+  // --- ATTEMPT 2: THUMBNAIL (Fallback for CR2/DNG) ---
+  try {
+    console.log(`Preview failed. Trying Thumbnail for ${file.name}...`);
+    const thumbData = await exifr.thumbnail(file);
+    if (thumbData) {
+        console.log("✅ Thumbnail Found");
+        return rawDataToUrl(thumbData);
     }
+  } catch(e) { console.debug("Thumbnail extraction skipped."); }
 
-    // STRATEGY 2: HEAVY DECODE (UTIF)
-    console.warn(`No embedded JPEG in ${file.name}. Switching to Heavy Decoder (UTIF)...`);
-    const decodedUrl = await decodeWithUTIF(file);
-    
-    if (decodedUrl) {
-        console.log(`UTIF Success: ${file.name}`);
-        return decodedUrl;
-    }
-
-    return null;
-  } catch (e) {
-    console.warn(`All parsing failed for ${file.name}:`, e);
-    return null;
+  // --- ATTEMPT 3: HEAVY DECODE (UTIF) ---
+  console.warn(`No embedded JPEG in ${file.name}. Switching to Heavy Decoder (UTIF)...`);
+  const decodedUrl = await decodeWithUTIF(file);
+  if (decodedUrl) {
+      console.log(`✅ UTIF Success`);
+      return decodedUrl;
   }
+
+  console.error(`❌ All methods failed for ${file.name}`);
+  return null;
 };
 
 // --- HELPER: AUTO CROP MATH ---
@@ -190,7 +180,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
-        {label?.includes('Importing') && <p className="text-center text-[9px] text-zinc-700">Analyzing RAW data (High Res)...</p>}
       </div>
     </div>
   );
@@ -200,19 +189,16 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
 const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
-    // Increased timeout slightly for larger images
-    const timer = setTimeout(() => resolve(existingUrl), 2000); 
+    const timer = setTimeout(() => resolve(existingUrl), 1500); 
     img.onload = () => {
       clearTimeout(timer);
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
-      // Keep thumbnails small for filmstrip performance
       const scale = Math.min(150 / img.width, 150 / img.height);
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          // Use lower quality for thumbnails to save memory
           canvas.toBlob(blob => resolve(blob ? URL.createObjectURL(blob) : existingUrl), 'image/jpeg', 0.6);
       } else { resolve(existingUrl); }
     };
@@ -367,7 +353,6 @@ const App: React.FC = () => {
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
 
-    // Use high quality for export
     return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
   };
 
@@ -462,11 +447,8 @@ const App: React.FC = () => {
           const rawUrl = await loadRawImage(file);
           if (rawUrl) {
               fullResUrl = rawUrl;
-              // We have the high-res URL, but we need to generate a small thumb from it
-              // otherwise the filmstrip will lag.
-              thumbUrl = await generateThumbnail(file, fullResUrl);
+              thumbUrl = rawUrl; 
           } else {
-              // Final Failure State
               console.warn(`CRITICAL: All decoders failed for ${file.name}`);
               fullResUrl = createErrorImage(file.name);
               thumbUrl = fullResUrl; 
