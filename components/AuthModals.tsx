@@ -147,3 +147,77 @@ export const LoginPromptModal: React.FC<LoginPromptModalProps> = ({ onClose, onS
     </div>
   );
 };
+
+// --- 4. EXPORT OPTIONS MODAL (Quality Selector) ---
+interface ExportOptionsModalProps {
+  onClose: () => void;
+  onConfirm: (quality: number) => void;
+}
+
+export const ExportOptionsModal: React.FC<ExportOptionsModalProps> = ({ onClose, onConfirm }) => {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm select-none p-4" onClick={onClose}>
+      <div className="bg-[#1e1e1e] p-6 rounded-xl shadow-2xl w-80 text-center border border-zinc-800 relative" onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} className="absolute top-3 right-3 text-zinc-500 hover:text-white transition-colors">
+          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+
+        <h3 className="text-lg font-bold text-white mb-4">Select Quality</h3>
+        
+        <div className="space-y-2">
+          {/* Option 1: Web */}
+          <button 
+            onClick={() => onConfirm(0.6)}
+            className="w-full flex items-center justify-between p-3 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors border border-zinc-700 group"
+          >
+            <div className="text-left">
+              <div className="text-xs font-bold text-zinc-300 group-hover:text-white">Web / Email</div>
+              <div className="text-[10px] text-zinc-500">Fast • ~500KB</div>
+            </div>
+            <span className="text-xs text-zinc-500 font-mono">60%</span>
+          </button>
+
+          {/* Option 2: Social */}
+          <button 
+            onClick={() => onConfirm(0.8)}
+            className="w-full flex items-center justify-between p-3 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors border border-zinc-700 group"
+          >
+             <div className="text-left">
+              <div className="text-xs font-bold text-zinc-300 group-hover:text-white">Social Media</div>
+              <div className="text-[10px] text-zinc-500">Balanced • ~2MB</div>
+            </div>
+             <span className="text-xs text-zinc-500 font-mono">80%</span>
+          </button>
+
+          {/* Option 3: Print (Standard) */}
+          <button 
+            onClick={() => onConfirm(0.92)}
+            className="w-full flex items-center justify-between p-3 bg-zinc-800 hover:bg-zinc-700 rounded-lg transition-colors border border-zinc-600 group ring-1 ring-zinc-700"
+          >
+             <div className="text-left">
+              <div className="text-xs font-bold text-white">Print Ready</div>
+              <div className="text-[10px] text-zinc-400">Standard • ~5MB</div>
+            </div>
+             <span className="text-xs text-zinc-400 font-mono">92%</span>
+          </button>
+
+          {/* Option 4: Ultra */}
+          <button 
+            onClick={() => onConfirm(1.0)}
+            className="w-full flex items-center justify-between p-3 bg-blue-900/30 hover:bg-blue-900/50 rounded-lg transition-colors border border-blue-800 group"
+          >
+             <div className="text-left">
+              <div className="text-xs font-bold text-blue-200">Ultra / Lossless</div>
+              <div className="text-[10px] text-blue-400">Max Detail • ~10MB+</div>
+            </div>
+             <span className="text-xs text-blue-400 font-mono">100%</span>
+          </button>
+        </div>
+        
+        <button onClick={onClose} className="mt-4 text-xs text-zinc-500 hover:text-zinc-300 underline">
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+};
