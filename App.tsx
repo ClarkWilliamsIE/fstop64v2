@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-// @ts-ignore - FORCE IMPORT THE UMD BUILD. This prevents Vite from tree-shaking the 'preview' function.
-import exifr from 'exifr/dist/full.umd.js';
+// REMOVED LOCAL IMPORT to prevent bundler from optimizing it to the "Lite" version
+// import exifr from 'exifr/dist/full.umd.js'; 
 
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
@@ -47,31 +47,44 @@ const createErrorImage = (text: string) => {
 // --- HELPER: RAW DETECTION ---
 const isRawFile = (file: File) => {
   const ext = file.name.split('.').pop()?.toLowerCase();
-  return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw'].includes(ext || '');
+  return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: ROBUST RAW LOADER ---
+// --- HELPER: ROBUST RAW LOADER (CDN VERSION) ---
 const loadRawImage = async (file: File): Promise<string | null> => {
-  // SAFETY CHECK: Ensure the library loaded correctly
-  if (!exifr || typeof exifr.preview !== 'function') {
-      console.error("CRITICAL: exifr library loaded without preview support.");
-      return null;
+  // Access the library from the global window object
+  const exifr = (window as any).exifr;
+
+  if (!exifr) {
+    console.error("CRITICAL: exifr library not loaded from CDN yet.");
+    return null;
   }
 
   try {
     let blob: Blob | null = null;
-
-    // 1. Try Thumbnail first (Faster, works better for DNG/CR2 in browser)
-    // DNGs often keep the useful image in the thumbnail slot
-    blob = await exifr.thumbnail(file);
     
-    // 2. If no thumbnail, try the full Preview image
+    // STRATEGY: 
+    // DNG/TIFF often hide the JPEG in "thumbnail" or "preview".
+    // CR2/ARW often have it in "preview".
+    // We try both.
+    
+    console.log(`Attempting parse for ${file.name}...`);
+    
+    // 1. Try Thumbnail
+    try {
+        blob = await exifr.thumbnail(file);
+    } catch(e) { console.debug('Thumb failed', e); }
+
+    // 2. Try Preview if Thumbnail failed
     if (!blob) {
-       console.log(`No thumbnail found in ${file.name}, scanning for preview...`);
-       blob = await exifr.preview(file);
+       console.debug("No thumbnail, trying preview...");
+       try {
+           blob = await exifr.preview(file);
+       } catch(e) { console.debug('Preview failed', e); }
     }
 
     if (blob) {
+      console.log(`Success: Extracted ${blob.size} bytes`);
       return URL.createObjectURL(blob);
     } else {
       console.warn(`Failed: No embedded JPEG found in ${file.name}`);
@@ -143,7 +156,6 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
 const generateThumbnail = async (file: File, existingUrl: string): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
-    // Shorter timeout to keep UI snappy
     const timer = setTimeout(() => resolve(existingUrl), 1000);
 
     img.onload = () => {
@@ -172,6 +184,18 @@ const generateThumbnail = async (file: File, existingUrl: string): Promise<strin
 
 const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
+
+  // --- CDN INJECTION FOR EXIFR ---
+  // This ensures we get the FULL version with Preview support, bypassing Bundler/Vite optimizations
+  useEffect(() => {
+    if (!(window as any).exifr) {
+        const script = document.createElement('script');
+        script.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
+        script.async = true;
+        script.onload = () => console.log("✅ RAW Parsing Library Loaded via CDN");
+        document.body.appendChild(script);
+    }
+  }, []);
 
   useEffect(() => {
     const onPopState = () => setCurrentPath(window.location.pathname);
@@ -378,6 +402,12 @@ const App: React.FC = () => {
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
 
+    // Ensure exifr is loaded before we start
+    if (!(window as any).exifr) {
+        console.log("Waiting for library...");
+        await new Promise(r => setTimeout(r, 500));
+    }
+
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       let fullResUrl = '';
@@ -388,9 +418,9 @@ const App: React.FC = () => {
           const rawUrl = await loadRawImage(file);
           if (rawUrl) {
               fullResUrl = rawUrl;
-              thumbUrl = rawUrl; // Reuse the embedded JPEG as thumb
+              thumbUrl = rawUrl; 
           } else {
-              // If RAW failed, show the Red Error Card
+              // DNG Fallback
               console.warn(`Could not parse RAW: ${file.name}`);
               fullResUrl = createErrorImage(file.name);
               thumbUrl = fullResUrl; 
@@ -398,7 +428,6 @@ const App: React.FC = () => {
       } else {
           // 2. STANDARD IMAGE (JPG/PNG)
           fullResUrl = URL.createObjectURL(file);
-          // Generate a smaller thumb for performance
           thumbUrl = await generateThumbnail(file, fullResUrl);
       }
       
@@ -457,7 +486,7 @@ const App: React.FC = () => {
         type="file" 
         ref={fileInputRef} 
         className="hidden" 
-        accept="image/*,.arw,.cr2,.cr3,.nef,.dng,.orf,.raf,.rw2,.pef,.srw" 
+        accept="image/*,.arw,.cr2,.cr3,.nef,.dng,.orf,.raf,.rw2,.pef,.srw,.tif,.tiff" 
         multiple 
         onChange={handleFileChange} 
       />
