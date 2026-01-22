@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
+
+// We import styles/types but rely on CDN for heavy RAW libs
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -24,7 +26,7 @@ const createErrorImage = (text: string) => {
   if (ctx) {
     ctx.fillStyle = '#1a1a1a';
     ctx.fillRect(0, 0, 300, 200);
-    ctx.strokeStyle = '#ef4444'; 
+    ctx.strokeStyle = '#ef4444'; // Red
     ctx.lineWidth = 4;
     ctx.strokeRect(10, 10, 280, 180);
     ctx.fillStyle = '#ef4444';
@@ -46,7 +48,6 @@ const isRawFile = (file: File) => {
 };
 
 // --- HELPER: HEAVY DECODER (UTIF) ---
-// This runs if the fast 'preview extraction' fails. It actually decodes the raw pixels.
 const decodeWithUTIF = async (file: File): Promise<string | null> => {
     const UTIF = (window as any).UTIF;
     if (!UTIF) return null;
@@ -56,22 +57,21 @@ const decodeWithUTIF = async (file: File): Promise<string | null> => {
         const arrayBuffer = await file.arrayBuffer();
         const ifds = UTIF.decode(arrayBuffer);
         
-        // Find the first valid image directory
         let page = ifds[0];
-        // Loop through IFDs to find the main image if the first one is just a tiny thumb
+        // Scan for the largest valid image
+        let maxPixels = 0;
         for (let i = 0; i < ifds.length; i++) {
-             if (ifds[i].width > 0 && ifds[i].height > 0) {
-                 // Prefer the one that isn't excessively huge to save memory, 
-                 // or just take the first valid one.
-                 page = ifds[i]; 
-                 break;
+             const p = ifds[i];
+             const pixels = p.width * p.height;
+             if (pixels > maxPixels && pixels > 0) {
+                 maxPixels = pixels;
+                 page = p;
              }
         }
 
         UTIF.decodeImage(arrayBuffer, page);
         const rgba = UTIF.toRGBA8(page);
         
-        // Paint to canvas
         const canvas = document.createElement('canvas');
         canvas.width = page.width;
         canvas.height = page.height;
@@ -101,20 +101,36 @@ const loadRawImage = async (file: File): Promise<string | null> => {
 
   try {
     // STRATEGY 1: FAST EXTRACT (exifr)
-    // Tries to find a pre-made JPEG inside the RAW. Instant.
-    let blob: Blob | null = null;
+    let rawData: any = null;
+    
     try {
-        blob = await exifr.thumbnail(file);
-        if (!blob) blob = await exifr.preview(file);
-    } catch(e) { console.debug('Exifr failed', e); }
+        // Try getting the embedded JPEG buffer
+        rawData = await exifr.thumbnail(file);
+        if (!rawData) {
+            console.log("No thumbnail found, scanning preview...");
+            rawData = await exifr.preview(file);
+        }
+    } catch(e) { 
+        console.debug('Exifr extraction skipped:', e); 
+    }
 
-    if (blob) {
+    if (rawData) {
       console.log(`Exifr Success: ${file.name}`);
+      
+      // *** FIX IS HERE ***
+      // exifr returns an ArrayBuffer (raw bytes). 
+      // URL.createObjectURL needs a Blob. We must wrap it.
+      let blob: Blob;
+      if (rawData instanceof Blob) {
+          blob = rawData;
+      } else {
+          blob = new Blob([rawData], { type: 'image/jpeg' });
+      }
+      
       return URL.createObjectURL(blob);
     }
 
     // STRATEGY 2: HEAVY DECODE (UTIF)
-    // If no JPEG found, use math to decode the raw sensor data. Slower.
     console.warn(`No embedded JPEG in ${file.name}. Switching to Heavy Decoder (UTIF)...`);
     const decodedUrl = await decodeWithUTIF(file);
     
@@ -163,7 +179,7 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
           <div className="h-full bg-blue-500 transition-all duration-100 ease-out" style={{ width: `${percentage}%` }} />
         </div>
         <p className="text-center text-[10px] text-zinc-600 font-mono">Item {current} of {total}</p>
-        {label?.includes('Importing') && <p className="text-center text-[9px] text-zinc-700">Large RAW files may take a moment...</p>}
+        {label?.includes('Importing') && <p className="text-center text-[9px] text-zinc-700">Analyzing RAW data...</p>}
       </div>
     </div>
   );
@@ -195,16 +211,13 @@ const App: React.FC = () => {
   const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
 
   // --- CDN INJECTION ---
-  // Load BOTH exifr (Extraction) and UTIF (Decoder)
   useEffect(() => {
-    // 1. Load EXIFR (Fast)
     if (!(window as any).exifr) {
         const s1 = document.createElement('script');
         s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
         s1.async = true;
         document.body.appendChild(s1);
     }
-    // 2. Load UTIF (Heavy Fallback)
     if (!(window as any).UTIF) {
         const s2 = document.createElement('script');
         s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
