@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
+// JSZip is no longer used for the active batch logic, but kept in imports if you revert later
+import JSZip from 'jszip'; 
 import { EditParams, DEFAULT_PARAMS, Photo, Preset, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
 import Viewport from './components/Viewport';
@@ -10,7 +11,7 @@ import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
 import { LoginModal, PaywallModal } from './components/AuthModals';
-import AboutModal from './components/AboutModal'; // Ensure this file exists
+import AboutModal from './components/AboutModal';
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
 import Privacy from './Privacy';
@@ -98,10 +99,10 @@ const App: React.FC = () => {
 
   // UI State
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
-  const [showAbout, setShowAbout] = useState(false); // <--- New State for About Modal
+  const [showAbout, setShowAbout] = useState(false);
 
   // Data State
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [photos, setPhotos] = useState<Photo[]>([]); // Start Empty
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
@@ -215,6 +216,7 @@ const App: React.FC = () => {
     }
   };
 
+  // --- UPDATED: SEQUENTIAL DOWNLOAD (NO ZIP) ---
   const handleBatchExport = async () => {
     if (!profile?.is_pro) {
       setModalType('paywall');
@@ -223,22 +225,30 @@ const App: React.FC = () => {
 
     if (editedPhotos.length === 0) return;
 
-    const zip = new JSZip();
+    // Use Batch Progress for UI, but handle files one by one
     setBatchProgress({ current: 0, total: editedPhotos.length });
 
     try {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
+        
+        // 1. Process High Res
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
-        if (blob) zip.file(`f64_${photo.name}`, blob);
+        
+        if (blob) {
+          // 2. Trigger Download immediately (No Zip)
+          saveAs(blob, `f64_${photo.name}`);
+          
+          // 3. Log usage
+          await incrementExport();
+        }
 
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
-        if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
+        
+        // 4. Critical: Pause to prevent browser "Pop-up Blocker" or throttling
+        await new Promise(r => setTimeout(r, 800)); 
       }
-
-      const content = await zip.generateAsync({ type: "blob" });
-      saveAs(content, `fstop64_batch_${new Date().toISOString().slice(0,10)}.zip`);
 
     } catch (e) {
       console.error("Batch failed", e);
@@ -281,7 +291,7 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
-      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Zipping Batch" />}
+      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Processing Export" />}
 
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
@@ -299,8 +309,6 @@ const App: React.FC = () => {
         onManage={manageSubscription}
         isBeta={false} 
         onToggleBeta={toggleBeta}
-        
-        // Connect About Modal
         onAbout={() => setShowAbout(true)} 
       />
       
@@ -311,7 +319,7 @@ const App: React.FC = () => {
 
       <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileChange} />
 
-      {/* --- MAIN LAYOUT (Responsive Stack) --- */}
+      {/* --- RESPONSIVE LAYOUT --- */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden relative">
         
         {/* VIEWPORT AREA */}
