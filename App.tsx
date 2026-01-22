@@ -292,7 +292,6 @@ const App: React.FC = () => {
     });
   };
 
-  // ADDED QUALITY PARAMETER
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
@@ -334,7 +333,6 @@ const App: React.FC = () => {
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
 
-    // USE SELECTED QUALITY
     return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', quality));
   };
 
@@ -440,8 +438,10 @@ const App: React.FC = () => {
 
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
+      {/* --- ADDED EXPORT STATUS LOADING BAR HERE --- */}
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
       {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Processing Export" />}
+      {exportStatus && <LoadingOverlay current={exportStatus.current} total={exportStatus.total} label="Exporting" />}
 
       <TopBar 
         onOpen={() => fileInputRef.current?.click()} 
