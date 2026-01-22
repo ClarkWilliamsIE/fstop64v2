@@ -1,8 +1,8 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { saveAs } from 'file-saver';
 
-// @ts-ignore - We must import the FULL version to get image extraction support
-import exifr from 'exifr/dist/full.esm.mjs';
+// @ts-ignore - FORCE IMPORT THE UMD BUILD. This prevents Vite from tree-shaking the 'preview' function.
+import exifr from 'exifr/dist/full.umd.js';
 
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
 import Sidebar from './components/Sidebar';
@@ -52,15 +52,22 @@ const isRawFile = (file: File) => {
 
 // --- HELPER: ROBUST RAW LOADER ---
 const loadRawImage = async (file: File): Promise<string | null> => {
+  // SAFETY CHECK: Ensure the library loaded correctly
+  if (!exifr || typeof exifr.preview !== 'function') {
+      console.error("CRITICAL: exifr library loaded without preview support.");
+      return null;
+  }
+
   try {
     let blob: Blob | null = null;
 
     // 1. Try Thumbnail first (Faster, works better for DNG/CR2 in browser)
+    // DNGs often keep the useful image in the thumbnail slot
     blob = await exifr.thumbnail(file);
     
     // 2. If no thumbnail, try the full Preview image
     if (!blob) {
-       console.log("No thumbnail found, trying preview extraction...");
+       console.log(`No thumbnail found in ${file.name}, scanning for preview...`);
        blob = await exifr.preview(file);
     }
 
