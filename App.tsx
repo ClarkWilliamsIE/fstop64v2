@@ -1,4 +1,3 @@
-// ... imports (keep exactly as they are in your current file) ...
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
@@ -11,12 +10,13 @@ import { applyPipeline } from './engine';
 import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
 import { LoginModal, PaywallModal } from './components/AuthModals';
+import AboutModal from './components/AboutModal'; // Ensure this file exists
 import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
 
-// ... (Keep LoadingOverlay and generateThumbnail exactly as they are) ...
+// --- Loading Overlay ---
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
   const percentage = Math.round((current / total) * 100);
   return (
@@ -35,6 +35,7 @@ const LoadingOverlay: React.FC<{ current: number; total: number; label?: string 
   );
 };
 
+// --- Thumbnail Helper ---
 const generateThumbnail = async (file: File): Promise<string> => {
   return new Promise((resolve) => {
     const reader = new FileReader();
@@ -60,6 +61,7 @@ const generateThumbnail = async (file: File): Promise<string> => {
 };
 
 const App: React.FC = () => {
+  // 0. --- ROUTING LOGIC ---
   const [currentPath, setCurrentPath] = useState(() => typeof window !== 'undefined' ? window.location.pathname : '/');
 
   useEffect(() => {
@@ -71,6 +73,7 @@ const App: React.FC = () => {
   if (currentPath === '/privacy') return <Privacy />;
   if (currentPath === '/terms') return <Terms />;
 
+  // 1. --- BETA MODE LOGIC ---
   const [isBeta, setIsBeta] = useState(() => {
     if (typeof window !== 'undefined') {
       return localStorage.getItem('fstop64_beta_mode') === 'true';
@@ -89,16 +92,21 @@ const App: React.FC = () => {
     return <BetaApp onToggleBeta={toggleBeta} />;
   }
 
+  // 2. --- STABLE APP LOGIC ---
   const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
   const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
 
+  // UI State
   const [modalType, setModalType] = useState<'login' | 'paywall' | null>(null);
-  
+  const [showAbout, setShowAbout] = useState(false); // <--- New State for About Modal
+
+  // Data State
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   
+  // Progress State
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
   const [importProgress, setImportProgress] = useState<{ current: number, total: number } | null>(null);
   const [batchProgress, setBatchProgress] = useState<{ current: number, total: number } | null>(null);
@@ -106,6 +114,7 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Lazy Load Image Elements
   useEffect(() => {
     if (!activePhotoId) return;
     if (imageElements[activePhotoId]) return;
@@ -138,85 +147,127 @@ const App: React.FC = () => {
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams): Promise<Blob | null> => {
-    // ... (Keep existing processImageToBlob logic - rotation etc) ...
+    // 1. Rotation Logic
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
+    
     if (rot === 0) {
-      sourceCanvas.width = img.width; sourceCanvas.height = img.height;
+      sourceCanvas.width = img.width;
+      sourceCanvas.height = img.height;
       sourceCanvas.getContext('2d')?.drawImage(img, 0, 0);
     } else {
       const rad = (rot * Math.PI) / 180;
       const cw = Math.abs(img.width * Math.cos(rad)) + Math.abs(img.height * Math.sin(rad));
       const ch = Math.abs(img.width * Math.sin(rad)) + Math.abs(img.height * Math.cos(rad));
-      sourceCanvas.width = cw; sourceCanvas.height = ch;
+      sourceCanvas.width = cw;
+      sourceCanvas.height = ch;
       const ctx = sourceCanvas.getContext('2d');
-      if (ctx) { ctx.translate(cw / 2, ch / 2); ctx.rotate(rad); ctx.drawImage(img, -img.width / 2, -img.height / 2); }
+      if (ctx) {
+        ctx.translate(cw / 2, ch / 2);
+        ctx.rotate(rad);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2);
+      }
     }
+
+    // 2. Crop & Pipeline Logic
     const canvas = document.createElement('canvas');
     const { crop } = params;
     const sx = (crop.left / 100) * sourceCanvas.width;
     const sy = (crop.top / 100) * sourceCanvas.height;
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
     const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
-    canvas.width = sw; canvas.height = sh;
+
+    canvas.width = sw;
+    canvas.height = sh;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
+
     ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
     const imgData = ctx.getImageData(0, 0, sw, sh);
     applyPipeline(imgData, params, sw, sh);
     ctx.putImageData(imgData, 0, 0);
+
     return new Promise<Blob | null>(res => canvas.toBlob(res, 'image/jpeg', 0.95));
   };
 
   const processExportWithGate = async (photo: Photo) => {
-    // ... (Keep existing export logic) ...
     const check = canExport();
     if (!check.allowed) {
       if (check.reason === 'auth') setModalType('login');
       else if (check.reason === 'quota') setModalType('paywall');
       return;
     }
+
     try {
       setExportStatus({ current: 1, total: 1 });
       const img = await getFullResImage(photo);
       const blob = await processImageToBlob(img, photo.params);
-      if (blob) { saveAs(blob, `f64_${photo.name}`); await incrementExport(); }
-    } catch (e) { console.error(e); alert("Export failed."); } finally { setExportStatus(null); }
+      
+      if (blob) {
+        saveAs(blob, `f64_${photo.name}`);
+        await incrementExport();
+      }
+    } catch (e) {
+      console.error(e);
+      alert("Export failed.");
+    } finally {
+      setExportStatus(null);
+    }
   };
 
   const handleBatchExport = async () => {
-    // ... (Keep existing batch logic) ...
-    if (!profile?.is_pro) { setModalType('paywall'); return; }
+    if (!profile?.is_pro) {
+      setModalType('paywall');
+      return;
+    }
+
     if (editedPhotos.length === 0) return;
+
     const zip = new JSZip();
     setBatchProgress({ current: 0, total: editedPhotos.length });
+
     try {
       for (let i = 0; i < editedPhotos.length; i++) {
         const photo = editedPhotos[i];
         const img = await getFullResImage(photo);
         const blob = await processImageToBlob(img, photo.params);
         if (blob) zip.file(`f64_${photo.name}`, blob);
+
         setBatchProgress({ current: i + 1, total: editedPhotos.length });
         if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
       }
+
       const content = await zip.generateAsync({ type: "blob" });
       saveAs(content, `fstop64_batch_${new Date().toISOString().slice(0,10)}.zip`);
-    } catch (e) { console.error("Batch failed", e); alert("Batch export failed. See console."); } finally { setBatchProgress(null); }
+
+    } catch (e) {
+      console.error("Batch failed", e);
+      alert("Batch export failed. See console.");
+    } finally {
+      setBatchProgress(null);
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    // ... (Keep existing file import logic) ...
     const files = e.target.files;
     if (!files || files.length === 0) return;
     const fileList = Array.from(files);
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
+
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i];
       const fullResUrl = URL.createObjectURL(file);
       const thumbUrl = await generateThumbnail(file);
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-      newPhotos.push({ id, name: file.name, src: fullResUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
+      
+      newPhotos.push({ 
+        id, 
+        name: file.name, 
+        src: fullResUrl, 
+        thumbnailSrc: thumbUrl,
+        params: { ...DEFAULT_PARAMS } 
+      });
       setImportProgress({ current: i + 1, total: fileList.length });
       if (i % 3 === 0) await new Promise(r => setTimeout(r, 0));
     }
@@ -247,19 +298,23 @@ const App: React.FC = () => {
         onUpgrade={upgradeToPro}
         onManage={manageSubscription}
         isBeta={false} 
-        onToggleBeta={toggleBeta} 
+        onToggleBeta={toggleBeta}
+        
+        // Connect About Modal
+        onAbout={() => setShowAbout(true)} 
       />
       
+      {/* --- MODALS --- */}
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
       {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
+      {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
 
       <input type="file" ref={fileInputRef} className="hidden" accept="image/*" multiple onChange={handleFileChange} />
 
-      {/* --- RESPONSIVE LAYOUT CHANGE IS HERE --- */}
-      {/* Changed: flex-row -> flex-col md:flex-row */}
+      {/* --- MAIN LAYOUT (Responsive Stack) --- */}
       <div className="flex flex-col md:flex-row flex-1 overflow-hidden relative">
         
-        {/* VIEWPORT & FILMSTRIP (Left on Desktop, Top on Mobile) */}
+        {/* VIEWPORT AREA */}
         <div className="flex-1 flex flex-col bg-[#1a1a1a] min-w-0 overflow-hidden h-1/2 md:h-auto">
           <div className="flex-1 relative flex items-center justify-center p-8 overflow-hidden">
             {activeImage ? (
@@ -271,7 +326,12 @@ const App: React.FC = () => {
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                     </svg>
                 </div>
-                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500">Import Photos</button>
+                <button 
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500"
+                >
+                    Import Photos
+                </button>
                 <span className="mt-2 text-xs text-zinc-600">Supports JPG, PNG</span>
               </div>
             )}
@@ -286,8 +346,7 @@ const App: React.FC = () => {
           />
         </div>
 
-        {/* SIDEBAR (Right on Desktop, Bottom on Mobile) */}
-        {/* Changed: w-80 -> w-full md:w-80. h-full -> h-1/2 md:h-full */}
+        {/* SIDEBAR AREA */}
         <aside className="w-full md:w-80 h-1/2 md:h-full bg-[#1e1e1e] border-t md:border-t-0 md:border-l border-zinc-800 flex flex-col z-10 shadow-2xl flex-shrink-0">
           <Sidebar 
             params={activePhoto?.params || DEFAULT_PARAMS} 
@@ -306,7 +365,6 @@ const App: React.FC = () => {
             onToggleCropMode={() => setIsCropMode(!isCropMode)}
           />
         </aside>
-
       </div>
     </div>
   );
