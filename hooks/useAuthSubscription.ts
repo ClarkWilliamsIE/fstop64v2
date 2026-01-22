@@ -109,10 +109,40 @@ export function useAuthSubscription() {
     setProfile(null);
   };
 
+  // --- UPDATED: Connects to Vercel API for Stripe Checkout ---
   const upgradeToPro = async () => {
-    console.log("Mock: Redirecting to Stripe...");
-    // Future integration: Call your Supabase Edge Function for Stripe Checkout here
-    alert("This would open Stripe Checkout in the production version.");
+    if (isMockMode) {
+       alert("Payment disabled in Mock Mode.");
+       return;
+    }
+    
+    if (!user) {
+      alert("Please sign in to upgrade.");
+      return;
+    }
+
+    try {
+      // Call our new Vercel API endpoint
+      const res = await fetch('/api/checkout', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ user: { id: user.id, email: user.email } }),
+      });
+
+      const data = await res.json();
+      
+      if (data.url) {
+        // Redirect user to Stripe's hosted checkout page
+        window.location.href = data.url;
+      } else {
+        throw new Error("No checkout URL returned");
+      }
+    } catch (error) {
+      console.error("Checkout failed:", error);
+      alert("Failed to start checkout. Please try again.");
+    }
   };
 
   const canExport = (): { allowed: boolean; reason?: 'auth' | 'quota' } => {
