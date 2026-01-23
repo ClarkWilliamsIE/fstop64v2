@@ -199,10 +199,10 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     }
   } catch (e) { console.debug("Preview skip"); }
 
-  // 1.5. SPECIAL RAW FALLBACK (CR3, NEF)
+  // 1.5. SPECIAL RAW FALLBACK (CR3, NEF, CR2)
   // Exifr and standard libraries often fail for these formats, so we manually scan for embedded JPEGs.
   const ext = file.name.split('.').pop()?.toLowerCase();
-  if (ext === 'cr3' || ext === 'nef') {
+  if (ext === 'cr3' || ext === 'nef' || ext === 'cr2') {
     try {
       const buffer = await file.arrayBuffer();
       const blob = await extractJpegPreviewFromRaw(buffer);
