@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { saveAs } from 'file-saver';
 
 import { EditParams, DEFAULT_PARAMS, Photo, isPhotoEdited } from './types';
@@ -83,7 +83,6 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   }
 
   if (candidates.length === 0) return null;
-  // Sort by size to get the highest resolution embedded preview
   candidates.sort((a, b) => b.size - a.size);
 
   for (const cand of candidates) {
@@ -105,7 +104,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const raw = new (window as any).raw.Raw();
       raw.setData(new Uint8Array(buffer));
-      // FORCE decode() for full sensor data on export
       const processed = (fullRes ? raw.decode() : (raw.extractThumb() || raw.decode()));
       if (!processed || !processed.width || !processed.height) return null;
 
@@ -128,7 +126,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
       let page = ifds[0];
-      // On export, avoid the subIFDs which are usually lower res thumbnails
       if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
       if (!page || !page.width || page.width <= 0) return null;
 
@@ -153,13 +150,11 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
   const exifr = (window as any).exifr;
   if (!exifr) return null;
 
-  // 1. Try Heavy Decode First for High Quality Exports
   if (highQuality) {
     const canvas = await decodeRawToCanvas(file, true);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.98);
   }
 
-  // 2. Try High-Res Embedded Previews (Very fast)
   try {
     const previewData = await exifr.preview(file);
     if (previewData) {
@@ -168,7 +163,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 3. Manual Scanner (Reliable for CR3/NEF/CR2)
   try {
     const buffer = await file.arrayBuffer();
     const blob = await extractJpegPreviewFromRaw(buffer);
@@ -178,7 +172,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 4. Fallback to Heavy Decode (If not already tried)
   if (!highQuality) {
     const canvas = await decodeRawToCanvas(file, false);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.9);
@@ -188,7 +181,7 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
 };
 
 const createProxyUrl = async (sourceUrl: string): Promise<string> => {
-  const PROXY_SIZE = 2048; // For UI performance only
+  const PROXY_SIZE = 2048;
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -318,6 +311,33 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // --- UNDO SYSTEM ---
+  const [undoStack, setUndoStack] = useState<string[]>([]);
+  const lastSavedState = useRef<string>(JSON.stringify(photos));
+
+  // Auto-save history entry when interaction stops (800ms debounce)
+  useEffect(() => {
+    const currentString = JSON.stringify(photos);
+    if (currentString === lastSavedState.current) return;
+
+    const timer = setTimeout(() => {
+      setUndoStack(prev => [lastSavedState.current, ...prev].slice(0, 50));
+      lastSavedState.current = currentString;
+    }, 800); 
+
+    return () => clearTimeout(timer);
+  }, [photos]);
+
+  const undo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    const previousStateString = undoStack[0];
+    const newStack = undoStack.slice(1);
+    
+    setPhotos(JSON.parse(previousStateString));
+    setUndoStack(newStack);
+    lastSavedState.current = previousStateString;
+  }, [undoStack]);
+
   useEffect(() => {
     if (!activePhotoId || imageElements[activePhotoId]) return;
     const photo = photos.find(p => p.id === activePhotoId);
@@ -331,10 +351,18 @@ const App: React.FC = () => {
   const activeImage = useMemo(() => activePhotoId ? imageElements[activePhotoId] : null, [imageElements, activePhotoId]);
   const editedPhotos = useMemo(() => photos.filter(p => isPhotoEdited(p.params) && !p.hiddenFromEdited), [photos]);
 
-  // --- ADDED: ARROW KEY NAVIGATION ---
+  // --- ADDED: ARROW KEY NAVIGATION & UNDO LISTENER ---
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      
+      // Ctrl+Z or Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z') {
+        e.preventDefault();
+        undo();
+        return;
+      }
+
       if (photos.length === 0 || !activePhotoId) return;
 
       const currentIndex = photos.findIndex(p => p.id === activePhotoId);
@@ -349,7 +377,7 @@ const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [photos, activePhotoId]);
+  }, [photos, activePhotoId, undo]);
 
   const handleUpdateParams = (newParams: EditParams) => {
     if (!activePhotoId) return;
@@ -363,7 +391,6 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
-    // EXPORT PHASE: Load original data to bypass UI proxy
     if (rawFile) {
       let src = '';
       if (isRawFile(rawFile)) {
@@ -386,7 +413,6 @@ const App: React.FC = () => {
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
-    // ALWAYS USE NATURAL DIMENSIONS
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
@@ -406,7 +432,7 @@ const App: React.FC = () => {
     const sx = (crop.left / 100) * sourceCanvas.width;
     const sy = (crop.top / 100) * sourceCanvas.height;
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
-    const sh = sourceCanvas.height * (1 - (crop.top + bottom) / 100);
+    const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
     if (sw <= 0 || sh <= 0) return null;
     canvas.width = sw; canvas.height = sh;
     const ctx = canvas.getContext('2d');
@@ -495,7 +521,7 @@ const App: React.FC = () => {
       />
 
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
-      {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
+      {modalType === 'paywall' && <PaywallModal isMockMode={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
       {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
       {modalType === 'export_options' && <ExportOptionsModal onClose={() => setModalType(null)} onConfirm={runExport} />}
       {modalType === 'feedback' && <FeedbackModal onClose={() => setModalType(null)} />}
