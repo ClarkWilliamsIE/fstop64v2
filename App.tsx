@@ -70,7 +70,6 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   let startIndices: number[] = [];
   let candidates: Blob[] = [];
 
-  // Scan for JPEG markers
   for (let i = 0; i < view.length - 1; i++) {
     if (view[i] === jpegStart[0] && view[i + 1] === jpegStart[1]) {
       startIndices.push(i);
@@ -79,12 +78,8 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
 
   for (const start of startIndices) {
     for (let j = start + 2; j < view.length - 1; j++) {
-      // Optimization: NEF/CR3 previews are often large, but we need to find the specific end marker.
-      // Safety cap: don't search if the segment is getting absurdly huge without an end (e.g. > 50MB) 
-      // though raw files are large, so maybe just bounds check.
       if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
         const length = j + 2 - start;
-        // Min size: 25KB to filter out tiny thumbnails/icons, keeping the potential "Preview"
         if (length > 25000) {
           const blob = new Blob([view.subarray(start, j + 2)], { type: 'image/jpeg' });
           candidates.push(blob);
@@ -95,87 +90,64 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   }
 
   if (candidates.length === 0) return null;
-
-  // Sort by size (descending) to prefer the full-resolution preview
   candidates.sort((a, b) => b.size - a.size);
 
-  // Validate candidates: The first one that strictly loads is our winner.
   for (const blob of candidates) {
     try {
-      // createImageBitmap is a fast way to valid image data in browser
       const bitmap = await createImageBitmap(blob);
-      bitmap.close(); // Valid! Close and return blob.
+      bitmap.close();
       return blob;
     } catch (e) {
       console.warn("Invalid preview candidate found, skipping...", e);
     }
   }
-
   return null;
 };
 
-// --- HELPER: DECODE RAW TO CANVAS (Improved for CR3 Safety) ---
-const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> => {
-  // 1. Try raw.js (Good for CR2, NEF)
+// --- HELPER: DECODE RAW TO CANVAS (Force Full Res Option) ---
+const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<HTMLCanvasElement | null> => {
   if ((window as any).raw) {
     try {
-      const reader = new FileReader();
-      return new Promise((resolve) => {
-        reader.onload = (e) => {
-          try {
-            const buffer = e.target?.result as ArrayBuffer;
-            const raw = new (window as any).raw.Raw();
-            raw.setData(new Uint8Array(buffer));
-            const processed = raw.extractThumb() || raw.decode();
-            if (!processed || !processed.width || !processed.height) { resolve(null); return; }
-            const canvas = document.createElement('canvas');
-            canvas.width = processed.width;
-            canvas.height = processed.height;
-            const ctx = canvas.getContext('2d');
-            if (!ctx) { resolve(null); return; }
-            const imgData = ctx.createImageData(processed.width, processed.height);
-            imgData.data.set(processed.data);
-            ctx.putImageData(imgData, 0, 0);
-            resolve(canvas);
-          } catch (err) { resolve(null); }
-        };
-        reader.readAsArrayBuffer(file);
-      });
+      const buffer = await file.arrayBuffer();
+      const raw = new (window as any).raw.Raw();
+      raw.setData(new Uint8Array(buffer));
+      // For export, we explicitly skip thumbnails and call full sensor decode()
+      const processed = (!fullRes && raw.extractThumb()) || raw.decode();
+      if (!processed || !processed.width || !processed.height) return null;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = processed.width;
+      canvas.height = processed.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+      const imgData = ctx.createImageData(processed.width, processed.height);
+      imgData.data.set(processed.data);
+      ctx.putImageData(imgData, 0, 0);
+      return canvas;
     } catch (e) { console.warn("raw.js crash", e); }
   }
 
-  // 2. Try UTIF (Good for DNG, TIFF)
   if ((window as any).UTIF) {
     try {
-      // CR3 is ISOBMFF based, not TIFF based. UTIF will often fail or return garbage.
-      // Explicitly skip CR3 to avoid crashes and let it fall back to other methods.
       const ext = file.name.split('.').pop()?.toLowerCase();
       if (ext === 'cr3') return null;
 
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
+      // For full res, use the primary image IFD (0), not a subIFD thumbnail
       let page = ifds[0];
-      if (page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
+      if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
 
-      // CR3 Safety check: CR3 is ISO-based, UTIF often returns NaN dimensions
-      if (!page || typeof page.width !== 'number' || isNaN(page.width) || page.width <= 0) {
-        return null;
-      }
+      if (!page || !page.width || isNaN(page.width) || page.width <= 0) return null;
 
       (window as any).UTIF.decodeImage(buffer, page);
       const rgba = (window as any).UTIF.toRGBA8(page);
       const canvas = document.createElement('canvas');
-      // Ensure integer dimensions for createImageData
-      const width = Math.floor(page.width);
-      const height = Math.floor(page.height);
-
-      if (width <= 0 || height <= 0) return null;
-
-      canvas.width = width;
-      canvas.height = height;
+      canvas.width = Math.floor(page.width);
+      canvas.height = Math.floor(page.height);
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const imgData = ctx.createImageData(width, height);
+        const imgData = ctx.createImageData(canvas.width, canvas.height);
         imgData.data.set(rgba);
         ctx.putImageData(imgData, 0, 0);
         return canvas;
@@ -185,36 +157,36 @@ const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> 
   return null;
 };
 
-// --- HELPER: MASTER RAW LOADER (The Quality Cascade) ---
-const loadRawImage = async (file: File): Promise<string | null> => {
+// --- HELPER: MASTER RAW LOADER (Added quality flag) ---
+const loadRawImage = async (file: File, highQuality: boolean = false): Promise<string | null> => {
   const exifr = (window as any).exifr;
   if (!exifr) return null;
 
-  // 1. ATTEMPT HIGH-RES PREVIEW
-  try {
-    const previewData = await exifr.preview(file);
-    if (previewData) {
-      const url = rawDataToUrl(previewData);
-      if (await isImageLargeEnough(url, 600)) return url;
-    }
-  } catch (e) { console.debug("Preview skip"); }
-
-  // 1.5. SPECIAL RAW FALLBACK (CR3, NEF, CR2)
-  // Exifr and standard libraries often fail for these formats, so we manually scan for embedded JPEGs.
-  const ext = file.name.split('.').pop()?.toLowerCase();
-  if (ext === 'cr3' || ext === 'nef' || ext === 'cr2') {
+  // 1. If low quality requested (for UI), try high-res preview first
+  if (!highQuality) {
     try {
-      const buffer = await file.arrayBuffer();
-      const blob = await extractJpegPreviewFromRaw(buffer);
-      if (blob) return URL.createObjectURL(blob);
-    } catch (e) { console.warn("Raw extraction failed", e); }
+      const previewData = await exifr.preview(file);
+      if (previewData) {
+        const url = rawDataToUrl(previewData);
+        if (await isImageLargeEnough(url, 600)) return url;
+      }
+    } catch (e) { console.debug("Preview skip"); }
+
+    const ext = file.name.split('.').pop()?.toLowerCase();
+    if (ext === 'cr3' || ext === 'nef' || ext === 'cr2') {
+      try {
+        const buffer = await file.arrayBuffer();
+        const blob = await extractJpegPreviewFromRaw(buffer);
+        if (blob) return URL.createObjectURL(blob);
+      } catch (e) { console.warn("Raw extraction failed", e); }
+    }
   }
 
-  // 2. ATTEMPT HEAVY DECODE
-  const canvas = await decodeRawToCanvas(file);
+  // 2. Heavy Decode (Used for exports or when no preview exists)
+  const canvas = await decodeRawToCanvas(file, highQuality);
   if (canvas) return canvas.toDataURL('image/jpeg', 0.95);
 
-  // 3. ATTEMPT THUMBNAIL FALLBACK
+  // 3. Last resort fallback
   try {
     const thumbData = await exifr.thumbnail(file);
     if (thumbData) return rawDataToUrl(thumbData);
@@ -384,14 +356,23 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
+    // 1. Force full resolution decode for RAW files
     if (rawFile && isRawFile(rawFile)) {
-      const canvas = await decodeRawToCanvas(rawFile);
-      if (canvas) {
+      const rawUrl = await loadRawImage(rawFile, true); 
+      if (rawUrl) {
         const img = new Image();
-        img.src = canvas.toDataURL('image/jpeg', 1.0);
+        img.src = rawUrl;
         await new Promise(r => img.onload = r);
         return img;
       }
+    }
+    // 2. For standard files, reload the original blob to bypass proxy
+    if (rawFile) {
+        const originalUrl = URL.createObjectURL(rawFile);
+        const img = new Image();
+        img.src = originalUrl;
+        await new Promise(r => img.onload = r);
+        return img;
     }
     if (imageElements[photo.id]) return imageElements[photo.id];
     return new Promise((resolve, reject) => {
@@ -403,16 +384,20 @@ const App: React.FC = () => {
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
+    // Use natural dimensions for full-sized export
+    const w = img.naturalWidth;
+    const h = img.naturalHeight;
+
     if (rot === 0) {
-      sourceCanvas.width = img.width; sourceCanvas.height = img.height;
+      sourceCanvas.width = w; sourceCanvas.height = h;
       sourceCanvas.getContext('2d')?.drawImage(img, 0, 0);
     } else {
       const rad = (rot * Math.PI) / 180;
-      const cw = Math.abs(img.width * Math.cos(rad)) + Math.abs(img.height * Math.sin(rad));
-      const ch = Math.abs(img.width * Math.sin(rad)) + Math.abs(img.height * Math.cos(rad));
+      const cw = Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad));
+      const ch = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
       sourceCanvas.width = cw; sourceCanvas.height = ch;
       const ctx = sourceCanvas.getContext('2d');
-      if (ctx) { ctx.translate(cw / 2, ch / 2); ctx.rotate(rad); ctx.drawImage(img, -img.width / 2, -img.height / 2); }
+      if (ctx) { ctx.translate(cw / 2, ch / 2); ctx.rotate(rad); ctx.drawImage(img, -w / 2, -h / 2); }
     }
     const canvas = document.createElement('canvas');
     const { crop } = params;
@@ -472,16 +457,18 @@ const App: React.FC = () => {
     const fileList = Array.from(files);
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
-    if (!(window as any).raw && !(window as any).UTIF) await new Promise(r => setTimeout(r, 1000));
-
+    
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i]; let sourceUrl = '';
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       if (isRawFile(file)) {
         fileRegistry.current[id] = file;
-        const rawUrl = await loadRawImage(file);
+        const rawUrl = await loadRawImage(file, false); // Fast load for UI
         sourceUrl = rawUrl || createErrorImage(file.name);
-      } else sourceUrl = URL.createObjectURL(file);
+      } else {
+          fileRegistry.current[id] = file;
+          sourceUrl = URL.createObjectURL(file);
+      }
 
       const proxyUrl = await createProxyUrl(sourceUrl);
       const thumbUrl = await generateThumbnail(proxyUrl);
