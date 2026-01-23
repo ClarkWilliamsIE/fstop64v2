@@ -61,18 +61,16 @@ const isRawFile = (file: File) => {
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: CR3 PREVIEW EXTRACTOR ---
-const extractJpegPreviewFromCr3 = (buffer: ArrayBuffer): Blob | null => {
+// --- HELPER: RAW PREVIEW EXTRACTOR (CR3, NEF, etc.) ---
+const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | null> => {
   const view = new Uint8Array(buffer);
   const jpegStart = [0xFF, 0xD8];
   const jpegEnd = [0xFF, 0xD9];
 
   let startIndices: number[] = [];
-  let blobs: Blob[] = [];
+  let candidates: Blob[] = [];
 
-  // Simple scan for JPEG markers. 
-  // CR3 files usually have a full-size JPEG preview embedded.
-  // We look for all JPEGs and pick the largest one.
+  // Scan for JPEG markers
   for (let i = 0; i < view.length - 1; i++) {
     if (view[i] === jpegStart[0] && view[i + 1] === jpegStart[1]) {
       startIndices.push(i);
@@ -80,24 +78,40 @@ const extractJpegPreviewFromCr3 = (buffer: ArrayBuffer): Blob | null => {
   }
 
   for (const start of startIndices) {
-    // Look for end marker after start
     for (let j = start + 2; j < view.length - 1; j++) {
-      // Optimization: limit search distance if needed, but CR3 previews can be large
+      // Optimization: NEF/CR3 previews are often large, but we need to find the specific end marker.
+      // Safety cap: don't search if the segment is getting absurdly huge without an end (e.g. > 50MB) 
+      // though raw files are large, so maybe just bounds check.
       if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
         const length = j + 2 - start;
-        // Min size check to avoid thumbnails/icons (e.g. < 50KB)
-        if (length > 50000) {
+        // Min size: 25KB to filter out tiny thumbnails/icons, keeping the potential "Preview"
+        if (length > 25000) {
           const blob = new Blob([view.subarray(start, j + 2)], { type: 'image/jpeg' });
-          blobs.push(blob);
+          candidates.push(blob);
         }
-        break; // Found the end for this start
+        break;
       }
     }
   }
 
-  if (blobs.length === 0) return null;
-  // Return largest blob (likely the full preview)
-  return blobs.reduce((prev, current) => (prev.size > current.size) ? prev : current);
+  if (candidates.length === 0) return null;
+
+  // Sort by size (descending) to prefer the full-resolution preview
+  candidates.sort((a, b) => b.size - a.size);
+
+  // Validate candidates: The first one that strictly loads is our winner.
+  for (const blob of candidates) {
+    try {
+      // createImageBitmap is a fast way to valid image data in browser
+      const bitmap = await createImageBitmap(blob);
+      bitmap.close(); // Valid! Close and return blob.
+      return blob;
+    } catch (e) {
+      console.warn("Invalid preview candidate found, skipping...", e);
+    }
+  }
+
+  return null;
 };
 
 // --- HELPER: DECODE RAW TO CANVAS (Improved for CR3 Safety) ---
@@ -185,15 +199,15 @@ const loadRawImage = async (file: File): Promise<string | null> => {
     }
   } catch (e) { console.debug("Preview skip"); }
 
-  // 1.5. SPECIAL CR3 FALLBACK (Manual Extraction)
-  // Exifr often fails to find the preview in CR3, so we manually scan for it.
+  // 1.5. SPECIAL RAW FALLBACK (CR3, NEF)
+  // Exifr and standard libraries often fail for these formats, so we manually scan for embedded JPEGs.
   const ext = file.name.split('.').pop()?.toLowerCase();
-  if (ext === 'cr3') {
+  if (ext === 'cr3' || ext === 'nef') {
     try {
       const buffer = await file.arrayBuffer();
-      const blob = extractJpegPreviewFromCr3(buffer);
+      const blob = await extractJpegPreviewFromRaw(buffer);
       if (blob) return URL.createObjectURL(blob);
-    } catch (e) { console.warn("CR3 extraction failed", e); }
+    } catch (e) { console.warn("Raw extraction failed", e); }
   }
 
   // 2. ATTEMPT HEAVY DECODE
@@ -538,4 +552,3 @@ const App: React.FC = () => {
 };
 
 export default App;
-
