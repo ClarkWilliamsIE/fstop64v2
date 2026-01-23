@@ -34,7 +34,6 @@ const createErrorImage = (text: string) => {
   return canvas.toDataURL('image/jpeg');
 };
 
-// --- HELPER: BLOB CONVERTER ---
 const rawDataToUrl = (data: any): string => {
   if (!data) return '';
   let blob: Blob;
@@ -46,7 +45,6 @@ const rawDataToUrl = (data: any): string => {
   return URL.createObjectURL(blob);
 };
 
-// --- HELPER: QUALITY CHECK ---
 const isImageLargeEnough = (url: string, minWidth: number = 600): Promise<boolean> => {
   return new Promise((resolve) => {
     const img = new Image();
@@ -61,58 +59,54 @@ const isRawFile = (file: File) => {
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: RAW PREVIEW EXTRACTOR (CR3, NEF, etc.) ---
+// --- HELPER: IMPROVED RAW EXTRACTION ---
 const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | null> => {
   const view = new Uint8Array(buffer);
   const jpegStart = [0xFF, 0xD8];
   const jpegEnd = [0xFF, 0xD9];
 
-  let startIndices: number[] = [];
-  let candidates: Blob[] = [];
+  let candidates: { start: number; end: number; size: number }[] = [];
 
   for (let i = 0; i < view.length - 1; i++) {
     if (view[i] === jpegStart[0] && view[i + 1] === jpegStart[1]) {
-      startIndices.push(i);
-    }
-  }
-
-  for (const start of startIndices) {
-    for (let j = start + 2; j < view.length - 1; j++) {
-      if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
-        const length = j + 2 - start;
-        if (length > 25000) {
-          const blob = new Blob([view.subarray(start, j + 2)], { type: 'image/jpeg' });
-          candidates.push(blob);
+      for (let j = i + 2; j < view.length - 1; j++) {
+        if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
+          const length = j + 2 - i;
+          if (length > 50000) { // Filter out tiny icons/thumbs < 50KB
+            candidates.push({ start: i, end: j + 2, size: length });
+          }
+          i = j; // Move outer loop forward
+          break;
         }
-        break;
       }
     }
   }
 
   if (candidates.length === 0) return null;
+  // Sort by size to get the highest resolution embedded preview
   candidates.sort((a, b) => b.size - a.size);
 
-  for (const blob of candidates) {
+  for (const cand of candidates) {
     try {
+      const blob = new Blob([view.subarray(cand.start, cand.end)], { type: 'image/jpeg' });
       const bitmap = await createImageBitmap(blob);
       bitmap.close();
       return blob;
     } catch (e) {
-      console.warn("Invalid preview candidate found, skipping...", e);
+      continue;
     }
   }
   return null;
 };
 
-// --- HELPER: DECODE RAW TO CANVAS (Force Full Res Option) ---
 const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<HTMLCanvasElement | null> => {
   if ((window as any).raw) {
     try {
       const buffer = await file.arrayBuffer();
       const raw = new (window as any).raw.Raw();
       raw.setData(new Uint8Array(buffer));
-      // For export, we explicitly skip thumbnails and call full sensor decode()
-      const processed = (!fullRes && raw.extractThumb()) || raw.decode();
+      // FORCE decode() for full sensor data on export
+      const processed = (fullRes ? raw.decode() : (raw.extractThumb() || raw.decode()));
       if (!processed || !processed.width || !processed.height) return null;
 
       const canvas = document.createElement('canvas');
@@ -124,21 +118,19 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       imgData.data.set(processed.data);
       ctx.putImageData(imgData, 0, 0);
       return canvas;
-    } catch (e) { console.warn("raw.js crash", e); }
+    } catch (e) { console.warn("raw.js fail", e); }
   }
 
   if ((window as any).UTIF) {
     try {
       const ext = file.name.split('.').pop()?.toLowerCase();
       if (ext === 'cr3') return null;
-
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
-      // For full res, use the primary image IFD (0), not a subIFD thumbnail
       let page = ifds[0];
+      // On export, avoid the subIFDs which are usually lower res thumbnails
       if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
-
-      if (!page || !page.width || isNaN(page.width) || page.width <= 0) return null;
+      if (!page || !page.width || page.width <= 0) return null;
 
       (window as any).UTIF.decodeImage(buffer, page);
       const rgba = (window as any).UTIF.toRGBA8(page);
@@ -152,51 +144,51 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
         ctx.putImageData(imgData, 0, 0);
         return canvas;
       }
-    } catch (e) { console.warn("UTIF failed", e); }
+    } catch (e) { console.warn("UTIF fail", e); }
   }
   return null;
 };
 
-// --- HELPER: MASTER RAW LOADER (Added quality flag) ---
 const loadRawImage = async (file: File, highQuality: boolean = false): Promise<string | null> => {
   const exifr = (window as any).exifr;
   if (!exifr) return null;
 
-  // 1. If low quality requested (for UI), try high-res preview first
-  if (!highQuality) {
-    try {
-      const previewData = await exifr.preview(file);
-      if (previewData) {
-        const url = rawDataToUrl(previewData);
-        if (await isImageLargeEnough(url, 600)) return url;
-      }
-    } catch (e) { console.debug("Preview skip"); }
-
-    const ext = file.name.split('.').pop()?.toLowerCase();
-    if (ext === 'cr3' || ext === 'nef' || ext === 'cr2') {
-      try {
-        const buffer = await file.arrayBuffer();
-        const blob = await extractJpegPreviewFromRaw(buffer);
-        if (blob) return URL.createObjectURL(blob);
-      } catch (e) { console.warn("Raw extraction failed", e); }
-    }
+  // 1. Try Heavy Decode First for High Quality Exports
+  if (highQuality) {
+    const canvas = await decodeRawToCanvas(file, true);
+    if (canvas) return canvas.toDataURL('image/jpeg', 0.98);
   }
 
-  // 2. Heavy Decode (Used for exports or when no preview exists)
-  const canvas = await decodeRawToCanvas(file, highQuality);
-  if (canvas) return canvas.toDataURL('image/jpeg', 0.95);
-
-  // 3. Last resort fallback
+  // 2. Try High-Res Embedded Previews (Very fast)
   try {
-    const thumbData = await exifr.thumbnail(file);
-    if (thumbData) return rawDataToUrl(thumbData);
-  } catch (e) { console.debug("Thumb skip"); }
+    const previewData = await exifr.preview(file);
+    if (previewData) {
+      const url = rawDataToUrl(previewData);
+      if (!highQuality || await isImageLargeEnough(url, 1500)) return url;
+    }
+  } catch (e) {}
+
+  // 3. Manual Scanner (Reliable for CR3/NEF/CR2)
+  try {
+    const buffer = await file.arrayBuffer();
+    const blob = await extractJpegPreviewFromRaw(buffer);
+    if (blob) {
+      const url = URL.createObjectURL(blob);
+      if (!highQuality || await isImageLargeEnough(url, 1500)) return url;
+    }
+  } catch (e) {}
+
+  // 4. Fallback to Heavy Decode (If not already tried)
+  if (!highQuality) {
+    const canvas = await decodeRawToCanvas(file, false);
+    if (canvas) return canvas.toDataURL('image/jpeg', 0.9);
+  }
 
   return null;
 };
 
 const createProxyUrl = async (sourceUrl: string): Promise<string> => {
-  const PROXY_SIZE = 2048;
+  const PROXY_SIZE = 2048; // For UI performance only
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -228,9 +220,7 @@ const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   const safeH = imgH * scale;
   const emptyX = bbW - safeW;
   const emptyY = bbH - safeH;
-  const insetX = (emptyX / 2) / bbW * 100;
-  const insetY = (emptyY / 2) / bbH * 100;
-  return { top: insetY, bottom: insetY, left: insetX, right: insetX };
+  return { top: (emptyY / 2) / bbH * 100, bottom: (emptyY / 2) / bbH * 100, left: (emptyX / 2) / bbW * 100, right: (emptyX / 2) / bbW * 100 };
 };
 
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
@@ -274,18 +264,15 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!(window as any).exifr) {
-      const s1 = document.createElement('script');
-      s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
+      const s1 = document.createElement('script'); s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
       s1.async = true; document.body.appendChild(s1);
     }
     if (!(window as any).UTIF) {
-      const s2 = document.createElement('script');
-      s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
+      const s2 = document.createElement('script'); s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
       s2.async = true; document.body.appendChild(s2);
     }
     if (!(window as any).raw) {
-      const s3 = document.createElement('script');
-      s3.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
+      const s3 = document.createElement('script'); s3.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
       s3.async = true; document.body.appendChild(s3);
     }
   }, []);
@@ -356,37 +343,32 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
-    // 1. Force full resolution decode for RAW files
-    if (rawFile && isRawFile(rawFile)) {
-      const rawUrl = await loadRawImage(rawFile, true); 
-      if (rawUrl) {
+    // EXPORT PHASE: Load original data to bypass UI proxy
+    if (rawFile) {
+      let src = '';
+      if (isRawFile(rawFile)) {
+        src = await loadRawImage(rawFile, true) || '';
+      } else {
+        src = URL.createObjectURL(rawFile);
+      }
+      if (src) {
         const img = new Image();
-        img.src = rawUrl;
+        img.src = src;
         await new Promise(r => img.onload = r);
         return img;
       }
     }
-    // 2. For standard files, reload the original blob to bypass proxy
-    if (rawFile) {
-        const originalUrl = URL.createObjectURL(rawFile);
-        const img = new Image();
-        img.src = originalUrl;
-        await new Promise(r => img.onload = r);
-        return img;
-    }
-    if (imageElements[photo.id]) return imageElements[photo.id];
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img); img.onerror = reject; img.src = photo.src;
+    return imageElements[photo.id] || new Promise((res, rej) => {
+      const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = photo.src;
     });
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
-    // Use natural dimensions for full-sized export
-    const w = img.naturalWidth;
-    const h = img.naturalHeight;
+    // ALWAYS USE NATURAL DIMENSIONS
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
 
     if (rot === 0) {
       sourceCanvas.width = w; sourceCanvas.height = h;
@@ -445,7 +427,7 @@ const App: React.FC = () => {
           const blob = await processImageToBlob(img, photo.params, quality);
           if (blob) { saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); await incrementExport(); }
           setBatchProgress({ current: i + 1, total: editedPhotos.length });
-          await new Promise(r => setTimeout(r, 800));
+          await new Promise(r => setTimeout(r, 500));
         }
       } catch (e) { console.error(e); alert("Batch failed."); }
       finally { setBatchProgress(null); }
@@ -461,15 +443,12 @@ const App: React.FC = () => {
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i]; let sourceUrl = '';
       const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+      fileRegistry.current[id] = file;
       if (isRawFile(file)) {
-        fileRegistry.current[id] = file;
-        const rawUrl = await loadRawImage(file, false); // Fast load for UI
-        sourceUrl = rawUrl || createErrorImage(file.name);
+        sourceUrl = await loadRawImage(file, false) || createErrorImage(file.name);
       } else {
-          fileRegistry.current[id] = file;
-          sourceUrl = URL.createObjectURL(file);
+        sourceUrl = URL.createObjectURL(file);
       }
-
       const proxyUrl = await createProxyUrl(sourceUrl);
       const thumbUrl = await generateThumbnail(proxyUrl);
       newPhotos.push({ id, name: file.name, src: proxyUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
@@ -483,22 +462,16 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
-      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Processing Export" />}
+      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Exporting Collection" />}
       {exportStatus && <LoadingOverlay current={exportStatus.current} total={exportStatus.total} label="Exporting" />}
 
       <TopBar
-        onOpen={() => fileInputRef.current?.click()}
-        onExport={() => triggerExportFlow('single')}
-        onReset={() => handleUpdateParams(DEFAULT_PARAMS)}
-        onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
-        onPaste={() => clipboard && handleUpdateParams({ ...clipboard })}
-        canPaste={!!clipboard} isExporting={!!exportStatus}
-        user={user} profile={profile}
-        onSignIn={signIn} onSignOut={signOut}
-        onUpgrade={upgradeToPro} onManage={manageSubscription}
-        isBeta={false} onToggleBeta={toggleBeta}
-        onAbout={() => setShowAbout(true)}
-        onFeedback={() => setModalType('feedback')}
+        onOpen={() => fileInputRef.current?.click()} onExport={() => triggerExportFlow('single')}
+        onReset={() => handleUpdateParams(DEFAULT_PARAMS)} onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
+        onPaste={() => clipboard && handleUpdateParams({ ...clipboard })} canPaste={!!clipboard}
+        isExporting={!!exportStatus} user={user} profile={profile}
+        onSignIn={signIn} onSignOut={signOut} onUpgrade={upgradeToPro} onManage={manageSubscription}
+        isBeta={false} onToggleBeta={toggleBeta} onAbout={() => setShowAbout(true)} onFeedback={() => setModalType('feedback')}
       />
 
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
@@ -521,10 +494,6 @@ const App: React.FC = () => {
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                 </div>
                 <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500">Import Photos</button>
-                <div className="mt-4 flex flex-col items-center gap-1">
-                  <span className="text-xs text-zinc-600">JPG, PNG, RAW (ARW, CR2, CR3, NEF, DNG...)</span>
-                  <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5"><span className="w-1 h-1 bg-blue-500 rounded-full"></span>Free login required to export</span>
-                </div>
               </div>
             )}
           </div>
