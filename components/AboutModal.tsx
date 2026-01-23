@@ -44,7 +44,7 @@ const AboutModal: React.FC<AboutModalProps> = ({ onClose }) => {
 
           <div className="bg-zinc-900/50 p-4 rounded-lg border border-zinc-800 my-4">
             <h3 className="text-white font-bold mb-1 flex items-center gap-2">
-              <span className="text-green-500">NZD $2.00</span>
+              <span className="text-green-500">$2.00 per month</span>
               <span className="text-[10px] bg-zinc-800 text-zinc-400 px-1.5 py-0.5 rounded uppercase tracking-wider">The Promise</span>
             </h3>
             <p className="text-xs text-zinc-400">
