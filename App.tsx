@@ -72,10 +72,10 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
       for (let j = i + 2; j < view.length - 1; j++) {
         if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
           const length = j + 2 - i;
-          if (length > 50000) { // Filter out tiny icons/thumbs < 50KB
+          if (length > 50000) { 
             candidates.push({ start: i, end: j + 2, size: length });
           }
-          i = j; // Move outer loop forward
+          i = j;
           break;
         }
       }
@@ -83,7 +83,6 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   }
 
   if (candidates.length === 0) return null;
-  // Sort by size to get the highest resolution embedded preview
   candidates.sort((a, b) => b.size - a.size);
 
   for (const cand of candidates) {
@@ -105,7 +104,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const raw = new (window as any).raw.Raw();
       raw.setData(new Uint8Array(buffer));
-      // FORCE decode() for full sensor data on export
       const processed = (fullRes ? raw.decode() : (raw.extractThumb() || raw.decode()));
       if (!processed || !processed.width || !processed.height) return null;
 
@@ -128,7 +126,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
       let page = ifds[0];
-      // On export, avoid the subIFDs which are usually lower res thumbnails
       if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
       if (!page || !page.width || page.width <= 0) return null;
 
@@ -153,13 +150,11 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
   const exifr = (window as any).exifr;
   if (!exifr) return null;
 
-  // 1. Try Heavy Decode First for High Quality Exports
   if (highQuality) {
     const canvas = await decodeRawToCanvas(file, true);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.98);
   }
 
-  // 2. Try High-Res Embedded Previews (Very fast)
   try {
     const previewData = await exifr.preview(file);
     if (previewData) {
@@ -168,7 +163,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 3. Manual Scanner (Reliable for CR3/NEF/CR2)
   try {
     const buffer = await file.arrayBuffer();
     const blob = await extractJpegPreviewFromRaw(buffer);
@@ -178,7 +172,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 4. Fallback to Heavy Decode (If not already tried)
   if (!highQuality) {
     const canvas = await decodeRawToCanvas(file, false);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.9);
@@ -188,7 +181,7 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
 };
 
 const createProxyUrl = async (sourceUrl: string): Promise<string> => {
-  const PROXY_SIZE = 2048; // For UI performance only
+  const PROXY_SIZE = 2048;
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -307,9 +300,17 @@ const App: React.FC = () => {
   const [exportTarget, setExportTarget] = useState<'single' | 'batch' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  // Initialize photos from localStorage
+  const [photos, setPhotos] = useState<Photo[]>(() => {
+    const saved = localStorage.getItem('fstop64_session_photos');
+    return saved ? JSON.parse(saved) : [];
+  });
+
   const fileRegistry = useRef<Record<string, File>>({});
-  const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
+  const [activePhotoId, setActivePhotoId] = useState<string | null>(() => {
+      const saved = localStorage.getItem('fstop64_active_photo_id');
+      return saved || null;
+  });
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
@@ -318,14 +319,25 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Persistence logic
+  useEffect(() => {
+    localStorage.setItem('fstop64_session_photos', JSON.stringify(photos));
+  }, [photos]);
+
+  useEffect(() => {
+    if (activePhotoId) localStorage.setItem('fstop64_active_photo_id', activePhotoId);
+  }, [activePhotoId]);
+
   useEffect(() => {
     if (!activePhotoId || imageElements[activePhotoId]) return;
     const photo = photos.find(p => p.id === activePhotoId);
     if (!photo) return;
     const img = new Image();
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
+    // If Blob URL is dead (after refresh), this will fail, which is expected.
+    // Viewport handles empty image state by showing the "Import" prompt.
     img.src = photo.src;
-  }, [activePhotoId, photos, imageElements]);
+  }, [activePhotoId, photos]);
 
   const activePhoto = useMemo(() => photos.find(p => p.id === activePhotoId) || null, [photos, activePhotoId]);
   const activeImage = useMemo(() => activePhotoId ? imageElements[activePhotoId] : null, [imageElements, activePhotoId]);
@@ -343,7 +355,6 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
-    // EXPORT PHASE: Load original data to bypass UI proxy
     if (rawFile) {
       let src = '';
       if (isRawFile(rawFile)) {
@@ -358,15 +369,14 @@ const App: React.FC = () => {
         return img;
       }
     }
-    return imageElements[photo.id] || new Promise((res, rej) => {
-      const img = new Image(); img.onload = () => res(img); img.onerror = rej; img.src = photo.src;
-    });
+    // If fileRegistry is empty (after refresh), prompt user to re-upload
+    alert(`File "${photo.name}" missing from session. Please re-import to export.`);
+    throw new Error("File missing");
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
-    // ALWAYS USE NATURAL DIMENSIONS
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
@@ -388,7 +398,7 @@ const App: React.FC = () => {
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
     const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
     if (sw <= 0 || sh <= 0) return null;
-    canvas.width = sw; canvas.height = sh;
+    canvas.width = sw; canvas.height = h;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
@@ -414,7 +424,7 @@ const App: React.FC = () => {
         const img = await getFullResImage(activePhoto);
         const blob = await processImageToBlob(img, activePhoto.params, quality);
         if (blob) { saveAs(blob, `f64_${activePhoto.name.split('.')[0]}.jpg`); await incrementExport(); }
-      } catch (e) { console.error(e); alert("Export failed."); }
+      } catch (e) { console.error(e); }
       finally { setExportStatus(null); }
     }
     else if (exportTarget === 'batch') {
@@ -429,7 +439,7 @@ const App: React.FC = () => {
           setBatchProgress({ current: i + 1, total: editedPhotos.length });
           await new Promise(r => setTimeout(r, 500));
         }
-      } catch (e) { console.error(e); alert("Batch failed."); }
+      } catch (e) { console.error(e); }
       finally { setBatchProgress(null); }
     }
   };
@@ -442,7 +452,11 @@ const App: React.FC = () => {
     
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i]; let sourceUrl = '';
-      const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+      
+      // Check if this file is a re-upload of an existing session photo
+      const existing = photos.find(p => p.name === file.name);
+      const id = existing ? existing.id : Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+      
       fileRegistry.current[id] = file;
       if (isRawFile(file)) {
         sourceUrl = await loadRawImage(file, false) || createErrorImage(file.name);
@@ -451,7 +465,12 @@ const App: React.FC = () => {
       }
       const proxyUrl = await createProxyUrl(sourceUrl);
       const thumbUrl = await generateThumbnail(proxyUrl);
-      newPhotos.push({ id, name: file.name, src: proxyUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
+      
+      if (existing) {
+          setPhotos(prev => prev.map(p => p.id === id ? { ...p, src: proxyUrl, thumbnailSrc: thumbUrl } : p));
+      } else {
+          newPhotos.push({ id, name: file.name, src: proxyUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
+      }
       setImportProgress({ current: i + 1, total: fileList.length });
     }
     setPhotos(prev => [...prev, ...newPhotos]);
@@ -489,11 +508,13 @@ const App: React.FC = () => {
             {activeImage ? (
               <Viewport image={activeImage} params={activePhoto!.params} isCropMode={isCropMode} onUpdateCrop={(crop) => handleUpdateParams({ ...activePhoto!.params, crop })} />
             ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-700 text-center animate-pulse">
+              <div className="flex flex-col items-center justify-center text-zinc-700 text-center">
                 <div className="w-16 h-16 mb-4 text-zinc-800">
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                 </div>
-                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500">Import Photos</button>
+                <h3 className="text-zinc-400 font-bold mb-1">Session Data Found</h3>
+                <p className="text-xs text-zinc-600 mb-6 max-w-xs">Settings were saved, but you need to re-select your photos to continue editing.</p>
+                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700">Re-Import Photos</button>
               </div>
             )}
           </div>
