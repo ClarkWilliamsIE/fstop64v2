@@ -59,25 +59,29 @@ const isRawFile = (file: File) => {
   return ['arw', 'cr2', 'cr3', 'nef', 'dng', 'orf', 'raf', 'rw2', 'pef', 'srw', 'tif', 'tiff'].includes(ext || '');
 };
 
-// --- HELPER: IMPROVED RAW EXTRACTION ---
 const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | null> => {
   const view = new Uint8Array(buffer);
   const jpegStart = [0xFF, 0xD8];
   const jpegEnd = [0xFF, 0xD9];
 
-  let candidates: { start: number; end: number; size: number }[] = [];
+  let startIndices: number[] = [];
+  let candidates: Blob[] = [];
 
   for (let i = 0; i < view.length - 1; i++) {
     if (view[i] === jpegStart[0] && view[i + 1] === jpegStart[1]) {
-      for (let j = i + 2; j < view.length - 1; j++) {
-        if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
-          const length = j + 2 - i;
-          if (length > 50000) { 
-            candidates.push({ start: i, end: j + 2, size: length });
-          }
-          i = j;
-          break;
+      startIndices.push(i);
+    }
+  }
+
+  for (const start of startIndices) {
+    for (let j = start + 2; j < view.length - 1; j++) {
+      if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
+        const length = j + 2 - start;
+        if (length > 25000) {
+          const blob = new Blob([view.subarray(start, j + 2)], { type: 'image/jpeg' });
+          candidates.push(blob);
         }
+        break;
       }
     }
   }
@@ -85,97 +89,110 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.size - a.size);
 
-  for (const cand of candidates) {
+  for (const blob of candidates) {
     try {
-      const blob = new Blob([view.subarray(cand.start, cand.end)], { type: 'image/jpeg' });
       const bitmap = await createImageBitmap(blob);
       bitmap.close();
       return blob;
     } catch (e) {
-      continue;
+      console.warn("Invalid preview candidate found, skipping...", e);
     }
   }
   return null;
 };
 
-const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<HTMLCanvasElement | null> => {
+const decodeRawToCanvas = async (file: File): Promise<HTMLCanvasElement | null> => {
   if ((window as any).raw) {
     try {
-      const buffer = await file.arrayBuffer();
-      const raw = new (window as any).raw.Raw();
-      raw.setData(new Uint8Array(buffer));
-      const processed = (fullRes ? raw.decode() : (raw.extractThumb() || raw.decode()));
-      if (!processed || !processed.width || !processed.height) return null;
-
-      const canvas = document.createElement('canvas');
-      canvas.width = processed.width;
-      canvas.height = processed.height;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return null;
-      const imgData = ctx.createImageData(processed.width, processed.height);
-      imgData.data.set(processed.data);
-      ctx.putImageData(imgData, 0, 0);
-      return canvas;
-    } catch (e) { console.warn("raw.js fail", e); }
+      const reader = new FileReader();
+      return new Promise((resolve) => {
+        reader.onload = (e) => {
+          try {
+            const buffer = e.target?.result as ArrayBuffer;
+            const raw = new (window as any).raw.Raw();
+            raw.setData(new Uint8Array(buffer));
+            const processed = raw.extractThumb() || raw.decode();
+            if (!processed || !processed.width || !processed.height) { resolve(null); return; }
+            const canvas = document.createElement('canvas');
+            canvas.width = processed.width;
+            canvas.height = processed.height;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) { resolve(null); return; }
+            const imgData = ctx.createImageData(processed.width, processed.height);
+            imgData.data.set(processed.data);
+            ctx.putImageData(imgData, 0, 0);
+            resolve(canvas);
+          } catch (err) { resolve(null); }
+        };
+        reader.readAsArrayBuffer(file);
+      });
+    } catch (e) { console.warn("raw.js crash", e); }
   }
 
   if ((window as any).UTIF) {
     try {
       const ext = file.name.split('.').pop()?.toLowerCase();
       if (ext === 'cr3') return null;
+
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
       let page = ifds[0];
-      if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
-      if (!page || !page.width || page.width <= 0) return null;
+      if (page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
+
+      if (!page || typeof page.width !== 'number' || isNaN(page.width) || page.width <= 0) {
+        return null;
+      }
 
       (window as any).UTIF.decodeImage(buffer, page);
       const rgba = (window as any).UTIF.toRGBA8(page);
       const canvas = document.createElement('canvas');
-      canvas.width = Math.floor(page.width);
-      canvas.height = Math.floor(page.height);
+      const width = Math.floor(page.width);
+      const height = Math.floor(page.height);
+
+      if (width <= 0 || height <= 0) return null;
+
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
       if (ctx) {
-        const imgData = ctx.createImageData(canvas.width, canvas.height);
+        const imgData = ctx.createImageData(width, height);
         imgData.data.set(rgba);
         ctx.putImageData(imgData, 0, 0);
         return canvas;
       }
-    } catch (e) { console.warn("UTIF fail", e); }
+    } catch (e) { console.warn("UTIF failed", e); }
   }
   return null;
 };
 
-const loadRawImage = async (file: File, highQuality: boolean = false): Promise<string | null> => {
+const loadRawImage = async (file: File): Promise<string | null> => {
   const exifr = (window as any).exifr;
   if (!exifr) return null;
-
-  if (highQuality) {
-    const canvas = await decodeRawToCanvas(file, true);
-    if (canvas) return canvas.toDataURL('image/jpeg', 0.98);
-  }
 
   try {
     const previewData = await exifr.preview(file);
     if (previewData) {
       const url = rawDataToUrl(previewData);
-      if (!highQuality || await isImageLargeEnough(url, 1500)) return url;
+      if (await isImageLargeEnough(url, 600)) return url;
     }
-  } catch (e) {}
+  } catch (e) { console.debug("Preview skip"); }
+
+  const ext = file.name.split('.').pop()?.toLowerCase();
+  if (ext === 'cr3' || ext === 'nef' || ext === 'cr2') {
+    try {
+      const buffer = await file.arrayBuffer();
+      const blob = await extractJpegPreviewFromRaw(buffer);
+      if (blob) return URL.createObjectURL(blob);
+    } catch (e) { console.warn("Raw extraction failed", e); }
+  }
+
+  const canvas = await decodeRawToCanvas(file);
+  if (canvas) return canvas.toDataURL('image/jpeg', 0.95);
 
   try {
-    const buffer = await file.arrayBuffer();
-    const blob = await extractJpegPreviewFromRaw(buffer);
-    if (blob) {
-      const url = URL.createObjectURL(blob);
-      if (!highQuality || await isImageLargeEnough(url, 1500)) return url;
-    }
-  } catch (e) {}
-
-  if (!highQuality) {
-    const canvas = await decodeRawToCanvas(file, false);
-    if (canvas) return canvas.toDataURL('image/jpeg', 0.9);
-  }
+    const thumbData = await exifr.thumbnail(file);
+    if (thumbData) return rawDataToUrl(thumbData);
+  } catch (e) { console.debug("Thumb skip"); }
 
   return null;
 };
@@ -213,7 +230,9 @@ const calculateAutoCrop = (imgW: number, imgH: number, rotationDeg: number) => {
   const safeH = imgH * scale;
   const emptyX = bbW - safeW;
   const emptyY = bbH - safeH;
-  return { top: (emptyY / 2) / bbH * 100, bottom: (emptyY / 2) / bbH * 100, left: (emptyX / 2) / bbW * 100, right: (emptyX / 2) / bbW * 100 };
+  const insetX = (emptyX / 2) / bbW * 100;
+  const insetY = (emptyY / 2) / bbH * 100;
+  return { top: insetY, bottom: insetY, left: insetX, right: insetX };
 };
 
 const LoadingOverlay: React.FC<{ current: number; total: number; label?: string }> = ({ current, total, label }) => {
@@ -257,15 +276,18 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (!(window as any).exifr) {
-      const s1 = document.createElement('script'); s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
+      const s1 = document.createElement('script');
+      s1.src = "https://unpkg.com/exifr@7.1.3/dist/full.umd.js";
       s1.async = true; document.body.appendChild(s1);
     }
     if (!(window as any).UTIF) {
-      const s2 = document.createElement('script'); s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
+      const s2 = document.createElement('script');
+      s2.src = "https://unpkg.com/utif@3.1.0/UTIF.js";
       s2.async = true; document.body.appendChild(s2);
     }
     if (!(window as any).raw) {
-      const s3 = document.createElement('script'); s3.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
+      const s3 = document.createElement('script');
+      s3.src = "https://cdn.jsdelivr.net/npm/raw.js@0.0.4/dist/raw.min.js";
       s3.async = true; document.body.appendChild(s3);
     }
   }, []);
@@ -300,17 +322,9 @@ const App: React.FC = () => {
   const [exportTarget, setExportTarget] = useState<'single' | 'batch' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
-  // Initialize photos from localStorage
-  const [photos, setPhotos] = useState<Photo[]>(() => {
-    const saved = localStorage.getItem('fstop64_session_photos');
-    return saved ? JSON.parse(saved) : [];
-  });
-
+  const [photos, setPhotos] = useState<Photo[]>([]);
   const fileRegistry = useRef<Record<string, File>>({});
-  const [activePhotoId, setActivePhotoId] = useState<string | null>(() => {
-      const saved = localStorage.getItem('fstop64_active_photo_id');
-      return saved || null;
-  });
+  const [activePhotoId, setActivePhotoId] = useState<string | null>(null);
   const [clipboard, setClipboard] = useState<EditParams | null>(null);
   const [imageElements, setImageElements] = useState<Record<string, HTMLImageElement>>({});
   const [exportStatus, setExportStatus] = useState<{ current: number, total: number } | null>(null);
@@ -319,14 +333,27 @@ const App: React.FC = () => {
   const [isCropMode, setIsCropMode] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Persistence logic
+  // --- NEW: ARROW KEY NAVIGATION ---
   useEffect(() => {
-    localStorage.setItem('fstop64_session_photos', JSON.stringify(photos));
-  }, [photos]);
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if user is typing in an input
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return;
+      if (photos.length === 0 || !activePhotoId) return;
 
-  useEffect(() => {
-    if (activePhotoId) localStorage.setItem('fstop64_active_photo_id', activePhotoId);
-  }, [activePhotoId]);
+      const currentIndex = photos.findIndex(p => p.id === activePhotoId);
+      
+      if (e.key === 'ArrowRight') {
+        const nextIndex = (currentIndex + 1) % photos.length;
+        setActivePhotoId(photos[nextIndex].id);
+      } else if (e.key === 'ArrowLeft') {
+        const prevIndex = (currentIndex - 1 + photos.length) % photos.length;
+        setActivePhotoId(photos[prevIndex].id);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [photos, activePhotoId]);
 
   useEffect(() => {
     if (!activePhotoId || imageElements[activePhotoId]) return;
@@ -334,10 +361,8 @@ const App: React.FC = () => {
     if (!photo) return;
     const img = new Image();
     img.onload = () => setImageElements(prev => ({ ...prev, [activePhotoId]: img }));
-    // If Blob URL is dead (after refresh), this will fail, which is expected.
-    // Viewport handles empty image state by showing the "Import" prompt.
     img.src = photo.src;
-  }, [activePhotoId, photos]);
+  }, [activePhotoId, photos, imageElements]);
 
   const activePhoto = useMemo(() => photos.find(p => p.id === activePhotoId) || null, [photos, activePhotoId]);
   const activeImage = useMemo(() => activePhotoId ? imageElements[activePhotoId] : null, [imageElements, activePhotoId]);
@@ -355,41 +380,35 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
-    if (rawFile) {
-      let src = '';
-      if (isRawFile(rawFile)) {
-        src = await loadRawImage(rawFile, true) || '';
-      } else {
-        src = URL.createObjectURL(rawFile);
-      }
-      if (src) {
+    if (rawFile && isRawFile(rawFile)) {
+      const canvas = await decodeRawToCanvas(rawFile);
+      if (canvas) {
         const img = new Image();
-        img.src = src;
+        img.src = canvas.toDataURL('image/jpeg', 1.0);
         await new Promise(r => img.onload = r);
         return img;
       }
     }
-    // If fileRegistry is empty (after refresh), prompt user to re-upload
-    alert(`File "${photo.name}" missing from session. Please re-import to export.`);
-    throw new Error("File missing");
+    if (imageElements[photo.id]) return imageElements[photo.id];
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img); img.onerror = reject; img.src = photo.src;
+    });
   };
 
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-
     if (rot === 0) {
-      sourceCanvas.width = w; sourceCanvas.height = h;
+      sourceCanvas.width = img.width; sourceCanvas.height = img.height;
       sourceCanvas.getContext('2d')?.drawImage(img, 0, 0);
     } else {
       const rad = (rot * Math.PI) / 180;
-      const cw = Math.abs(w * Math.cos(rad)) + Math.abs(h * Math.sin(rad));
-      const ch = Math.abs(w * Math.sin(rad)) + Math.abs(h * Math.cos(rad));
+      const cw = Math.abs(img.width * Math.cos(rad)) + Math.abs(img.height * Math.sin(rad));
+      const ch = Math.abs(img.width * Math.sin(rad)) + Math.abs(img.height * Math.cos(rad));
       sourceCanvas.width = cw; sourceCanvas.height = ch;
       const ctx = sourceCanvas.getContext('2d');
-      if (ctx) { ctx.translate(cw / 2, ch / 2); ctx.rotate(rad); ctx.drawImage(img, -w / 2, -h / 2); }
+      if (ctx) { ctx.translate(cw / 2, ch / 2); ctx.rotate(rad); ctx.drawImage(img, -img.width / 2, -img.height / 2); }
     }
     const canvas = document.createElement('canvas');
     const { crop } = params;
@@ -398,7 +417,7 @@ const App: React.FC = () => {
     const sw = sourceCanvas.width * (1 - (crop.left + crop.right) / 100);
     const sh = sourceCanvas.height * (1 - (crop.top + crop.bottom) / 100);
     if (sw <= 0 || sh <= 0) return null;
-    canvas.width = sw; canvas.height = h;
+    canvas.width = sw; canvas.height = sh;
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.drawImage(sourceCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
@@ -424,7 +443,7 @@ const App: React.FC = () => {
         const img = await getFullResImage(activePhoto);
         const blob = await processImageToBlob(img, activePhoto.params, quality);
         if (blob) { saveAs(blob, `f64_${activePhoto.name.split('.')[0]}.jpg`); await incrementExport(); }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error(e); alert("Export failed."); }
       finally { setExportStatus(null); }
     }
     else if (exportTarget === 'batch') {
@@ -437,9 +456,9 @@ const App: React.FC = () => {
           const blob = await processImageToBlob(img, photo.params, quality);
           if (blob) { saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); await incrementExport(); }
           setBatchProgress({ current: i + 1, total: editedPhotos.length });
-          await new Promise(r => setTimeout(r, 500));
+          await new Promise(r => setTimeout(r, 800));
         }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error(e); alert("Batch failed."); }
       finally { setBatchProgress(null); }
     }
   };
@@ -449,28 +468,20 @@ const App: React.FC = () => {
     const fileList = Array.from(files);
     setImportProgress({ current: 0, total: fileList.length });
     const newPhotos: Photo[] = [];
-    
+    if (!(window as any).raw && !(window as any).UTIF) await new Promise(r => setTimeout(r, 1000));
+
     for (let i = 0; i < fileList.length; i++) {
       const file = fileList[i]; let sourceUrl = '';
-      
-      // Check if this file is a re-upload of an existing session photo
-      const existing = photos.find(p => p.name === file.name);
-      const id = existing ? existing.id : Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
-      
-      fileRegistry.current[id] = file;
+      const id = Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
       if (isRawFile(file)) {
-        sourceUrl = await loadRawImage(file, false) || createErrorImage(file.name);
-      } else {
-        sourceUrl = URL.createObjectURL(file);
-      }
+        fileRegistry.current[id] = file;
+        const rawUrl = await loadRawImage(file);
+        sourceUrl = rawUrl || createErrorImage(file.name);
+      } else sourceUrl = URL.createObjectURL(file);
+
       const proxyUrl = await createProxyUrl(sourceUrl);
       const thumbUrl = await generateThumbnail(proxyUrl);
-      
-      if (existing) {
-          setPhotos(prev => prev.map(p => p.id === id ? { ...p, src: proxyUrl, thumbnailSrc: thumbUrl } : p));
-      } else {
-          newPhotos.push({ id, name: file.name, src: proxyUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
-      }
+      newPhotos.push({ id, name: file.name, src: proxyUrl, thumbnailSrc: thumbUrl, params: { ...DEFAULT_PARAMS } });
       setImportProgress({ current: i + 1, total: fileList.length });
     }
     setPhotos(prev => [...prev, ...newPhotos]);
@@ -481,16 +492,22 @@ const App: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-[#121212] text-[#d4d4d4] overflow-hidden">
       {importProgress && <LoadingOverlay current={importProgress.current} total={importProgress.total} label="Importing" />}
-      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Exporting Collection" />}
+      {batchProgress && <LoadingOverlay current={batchProgress.current} total={batchProgress.total} label="Processing Export" />}
       {exportStatus && <LoadingOverlay current={exportStatus.current} total={exportStatus.total} label="Exporting" />}
 
       <TopBar
-        onOpen={() => fileInputRef.current?.click()} onExport={() => triggerExportFlow('single')}
-        onReset={() => handleUpdateParams(DEFAULT_PARAMS)} onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
-        onPaste={() => clipboard && handleUpdateParams({ ...clipboard })} canPaste={!!clipboard}
-        isExporting={!!exportStatus} user={user} profile={profile}
-        onSignIn={signIn} onSignOut={signOut} onUpgrade={upgradeToPro} onManage={manageSubscription}
-        isBeta={false} onToggleBeta={toggleBeta} onAbout={() => setShowAbout(true)} onFeedback={() => setModalType('feedback')}
+        onOpen={() => fileInputRef.current?.click()}
+        onExport={() => triggerExportFlow('single')}
+        onReset={() => handleUpdateParams(DEFAULT_PARAMS)}
+        onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
+        onPaste={() => clipboard && handleUpdateParams({ ...clipboard })}
+        canPaste={!!clipboard} isExporting={!!exportStatus}
+        user={user} profile={profile}
+        onSignIn={signIn} onSignOut={signOut}
+        onUpgrade={upgradeToPro} onManage={manageSubscription}
+        isBeta={false} onToggleBeta={toggleBeta}
+        onAbout={() => setShowAbout(true)}
+        onFeedback={() => setModalType('feedback')}
       />
 
       {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
@@ -508,13 +525,15 @@ const App: React.FC = () => {
             {activeImage ? (
               <Viewport image={activeImage} params={activePhoto!.params} isCropMode={isCropMode} onUpdateCrop={(crop) => handleUpdateParams({ ...activePhoto!.params, crop })} />
             ) : (
-              <div className="flex flex-col items-center justify-center text-zinc-700 text-center">
+              <div className="flex flex-col items-center justify-center text-zinc-700 text-center animate-pulse">
                 <div className="w-16 h-16 mb-4 text-zinc-800">
                   <svg fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
                 </div>
-                <h3 className="text-zinc-400 font-bold mb-1">Session Data Found</h3>
-                <p className="text-xs text-zinc-600 mb-6 max-w-xs">Settings were saved, but you need to re-select your photos to continue editing.</p>
-                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700">Re-Import Photos</button>
+                <button onClick={() => fileInputRef.current?.click()} className="px-6 py-2 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium rounded-lg transition-all border border-zinc-700 hover:border-zinc-500">Import Photos</button>
+                <div className="mt-4 flex flex-col items-center gap-1">
+                  <span className="text-xs text-zinc-600">JPG, PNG, RAW (ARW, CR2, CR3, NEF, DNG...)</span>
+                  <span className="text-[10px] text-zinc-500 font-medium flex items-center gap-1.5"><span className="w-1 h-1 bg-blue-500 rounded-full"></span>Free login required to export</span>
+                </div>
               </div>
             )}
           </div>
