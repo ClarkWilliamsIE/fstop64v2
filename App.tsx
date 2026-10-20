@@ -7,12 +7,10 @@ import Viewport from './components/Viewport';
 import TopBar from './components/TopBar';
 import Filmstrip from './components/Filmstrip';
 import { applyPipeline } from './engine';
-import { useAuthSubscription } from './hooks/useAuthSubscription';
 import { usePresets } from './hooks/usePresets';
-import { LoginModal, PaywallModal, LoginPromptModal, ExportOptionsModal } from './components/AuthModals';
+import { ExportOptionsModal } from './components/AuthModals';
 import AboutModal from './components/AboutModal';
 import FeedbackModal from './components/FeedbackModal';
-import { isMockMode } from './lib/supabase';
 import BetaApp from './BetaApp';
 import Privacy from './Privacy';
 import Terms from './Terms';
@@ -72,10 +70,10 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
       for (let j = i + 2; j < view.length - 1; j++) {
         if (view[j] === jpegEnd[0] && view[j + 1] === jpegEnd[1]) {
           const length = j + 2 - i;
-          if (length > 50000) { // Filter out tiny icons/thumbs < 50KB
+          if (length > 50000) {
             candidates.push({ start: i, end: j + 2, size: length });
           }
-          i = j; // Move outer loop forward
+          i = j;
           break;
         }
       }
@@ -83,7 +81,6 @@ const extractJpegPreviewFromRaw = async (buffer: ArrayBuffer): Promise<Blob | nu
   }
 
   if (candidates.length === 0) return null;
-  // Sort by size to get the highest resolution embedded preview
   candidates.sort((a, b) => b.size - a.size);
 
   for (const cand of candidates) {
@@ -105,7 +102,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const raw = new (window as any).raw.Raw();
       raw.setData(new Uint8Array(buffer));
-      // FORCE decode() for full sensor data on export
       const processed = (fullRes ? raw.decode() : (raw.extractThumb() || raw.decode()));
       if (!processed || !processed.width || !processed.height) return null;
 
@@ -128,7 +124,6 @@ const decodeRawToCanvas = async (file: File, fullRes: boolean = false): Promise<
       const buffer = await file.arrayBuffer();
       const ifds = (window as any).UTIF.decode(buffer);
       let page = ifds[0];
-      // On export, avoid the subIFDs which are usually lower res thumbnails
       if (!fullRes && page.subIFD && page.subIFD.length > 0) page = page.subIFD[0];
       if (!page || !page.width || page.width <= 0) return null;
 
@@ -153,13 +148,11 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
   const exifr = (window as any).exifr;
   if (!exifr) return null;
 
-  // 1. Try Heavy Decode First for High Quality Exports
   if (highQuality) {
     const canvas = await decodeRawToCanvas(file, true);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.98);
   }
 
-  // 2. Try High-Res Embedded Previews (Very fast)
   try {
     const previewData = await exifr.preview(file);
     if (previewData) {
@@ -168,7 +161,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 3. Manual Scanner (Reliable for CR3/NEF/CR2)
   try {
     const buffer = await file.arrayBuffer();
     const blob = await extractJpegPreviewFromRaw(buffer);
@@ -178,7 +170,6 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
     }
   } catch (e) {}
 
-  // 4. Fallback to Heavy Decode (If not already tried)
   if (!highQuality) {
     const canvas = await decodeRawToCanvas(file, false);
     if (canvas) return canvas.toDataURL('image/jpeg', 0.9);
@@ -188,7 +179,7 @@ const loadRawImage = async (file: File, highQuality: boolean = false): Promise<s
 };
 
 const createProxyUrl = async (sourceUrl: string): Promise<string> => {
-  const PROXY_SIZE = 2048; // For UI performance only
+  const PROXY_SIZE = 2048;
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
@@ -300,10 +291,13 @@ const App: React.FC = () => {
 
   if (isBeta) return <BetaApp onToggleBeta={toggleBeta} />;
 
-  const { user, profile, signIn, signOut, upgradeToPro, manageSubscription, canExport, incrementExport } = useAuthSubscription();
-  const { presets, savePreset, deletePreset } = usePresets(user?.id || null);
+  // Local mock user & profile to grant full access without authentication
+  const user = { id: 'local-user', email: 'user@local' } as any;
+  const profile = { is_pro: true } as any;
 
-  const [modalType, setModalType] = useState<'login' | 'paywall' | 'login_prompt' | 'export_options' | 'feedback' | null>(null);
+  const { presets, savePreset, deletePreset } = usePresets(user.id);
+
+  const [modalType, setModalType] = useState<'export_options' | 'feedback' | null>(null);
   const [exportTarget, setExportTarget] = useState<'single' | 'batch' | null>(null);
   const [showAbout, setShowAbout] = useState(false);
 
@@ -343,7 +337,6 @@ const App: React.FC = () => {
 
   const getFullResImage = async (photo: Photo): Promise<HTMLImageElement> => {
     const rawFile = fileRegistry.current[photo.id];
-    // EXPORT PHASE: Load original data to bypass UI proxy
     if (rawFile) {
       let src = '';
       if (isRawFile(rawFile)) {
@@ -366,7 +359,6 @@ const App: React.FC = () => {
   const processImageToBlob = async (img: HTMLImageElement, params: EditParams, quality: number): Promise<Blob | null> => {
     let sourceCanvas = document.createElement('canvas');
     const rot = params.crop.rotation || 0;
-    // ALWAYS USE NATURAL DIMENSIONS
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
@@ -399,11 +391,8 @@ const App: React.FC = () => {
   };
 
   const triggerExportFlow = (type: 'single' | 'batch') => {
-    if (!user) { setModalType('login_prompt'); return; }
-    const check = canExport();
-    if (!check.allowed) { if (check.reason === 'quota') setModalType('paywall'); return; }
-    if (type === 'batch' && !profile?.is_pro) { setModalType('paywall'); return; }
-    setExportTarget(type); setModalType('export_options');
+    setExportTarget(type);
+    setModalType('export_options');
   };
 
   const runExport = async (quality: number) => {
@@ -413,7 +402,7 @@ const App: React.FC = () => {
         setExportStatus({ current: 1, total: 1 });
         const img = await getFullResImage(activePhoto);
         const blob = await processImageToBlob(img, activePhoto.params, quality);
-        if (blob) { saveAs(blob, `f64_${activePhoto.name.split('.')[0]}.jpg`); await incrementExport(); }
+        if (blob) { saveAs(blob, `f64_${activePhoto.name.split('.')[0]}.jpg`); }
       } catch (e) { console.error(e); alert("Export failed."); }
       finally { setExportStatus(null); }
     }
@@ -425,7 +414,7 @@ const App: React.FC = () => {
           const photo = editedPhotos[i];
           const img = await getFullResImage(photo);
           const blob = await processImageToBlob(img, photo.params, quality);
-          if (blob) { saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); await incrementExport(); }
+          if (blob) { saveAs(blob, `f64_${photo.name.split('.')[0]}.jpg`); }
           setBatchProgress({ current: i + 1, total: editedPhotos.length });
           await new Promise(r => setTimeout(r, 500));
         }
@@ -470,13 +459,10 @@ const App: React.FC = () => {
         onReset={() => handleUpdateParams(DEFAULT_PARAMS)} onCopy={() => activePhoto && setClipboard({ ...activePhoto.params })}
         onPaste={() => clipboard && handleUpdateParams({ ...clipboard })} canPaste={!!clipboard}
         isExporting={!!exportStatus} user={user} profile={profile}
-        onSignIn={signIn} onSignOut={signOut} onUpgrade={upgradeToPro} onManage={manageSubscription}
+        onSignIn={() => {}} onSignOut={() => {}} onUpgrade={() => {}} onManage={() => {}}
         isBeta={false} onToggleBeta={toggleBeta} onAbout={() => setShowAbout(true)} onFeedback={() => setModalType('feedback')}
       />
 
-      {modalType === 'login' && <LoginModal onClose={() => setModalType(null)} onAction={() => { signIn(); setModalType(null); }} />}
-      {modalType === 'paywall' && <PaywallModal isMock={isMockMode} onClose={() => setModalType(null)} onAction={() => { upgradeToPro(); setModalType(null); }} />}
-      {modalType === 'login_prompt' && <LoginPromptModal onClose={() => setModalType(null)} onSignIn={() => { signIn(); setModalType(null); }} />}
       {modalType === 'export_options' && <ExportOptionsModal onClose={() => setModalType(null)} onConfirm={runExport} />}
       {modalType === 'feedback' && <FeedbackModal onClose={() => setModalType(null)} />}
       {showAbout && <AboutModal onClose={() => setShowAbout(false)} />}
